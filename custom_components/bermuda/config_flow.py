@@ -471,6 +471,8 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         - Attenuation: Environmental absorption factor (lower=open space, higher=thick walls)
         - Max Radius: Maximum tracking distance for this scanner (in meters)
 
+        Select a device to see real-time distance estimates for calibration.
+
         NOTE: Attenuation and Max Radius settings are currently UI-only and not yet applied
         to calculations. This will be enabled in a future update.
         """
@@ -513,6 +515,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
             # User clicked Submit without Save - refresh display with current values
             self._last_scanner_info = user_input[CONF_SCANNER_INFO]
+            self._last_device = user_input.get(CONF_DEVICES)
 
         # Load saved values and global defaults
         saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
@@ -521,9 +524,32 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         global_attenuation = self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
         global_max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
 
-        # Build nested dict for each scanner
+        # Determine which scanners to show settings for
+        # If a device is selected, show only the nearest scanner
+        # Otherwise show all scanners for manual configuration
+        scanners_to_show = []
+        nearest_scanner_name = None
+        selected_device = None
+
+        if self._last_device:
+            selected_device = self._get_bermuda_device_from_registry(self._last_device)
+            if selected_device is not None and selected_device.area_name:
+                # Find the scanner address for the nearest area
+                # The area_name matches the scanner's name
+                for scanner_addr in self.coordinator.scanner_list:
+                    scanner_device = self.coordinator.devices.get(scanner_addr)
+                    if scanner_device and scanner_device.name == selected_device.area_name:
+                        scanners_to_show = [scanner_addr]
+                        nearest_scanner_name = selected_device.area_name
+                        break
+
+        # If no device selected or no nearest scanner found, show all scanners
+        if not scanners_to_show:
+            scanners_to_show = self.coordinator.scanner_list
+
+        # Build nested dict for scanners to display
         scanner_config_dict = {}
-        for scanner in self.coordinator.scanner_list:
+        for scanner in scanners_to_show:
             scanner_name = self.coordinator.devices[scanner].name
             scanner_config_dict[scanner_name] = {
                 "rssi_offset": saved_rssi_offsets.get(scanner, 0),
@@ -532,6 +558,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             }
 
         data_schema = {
+            vol.Optional(
+                CONF_DEVICES,
+                default=self._last_device if self._last_device is not None else vol.UNDEFINED,
+            ): DeviceSelector(DeviceSelectorConfig(integration=DOMAIN)),
             vol.Required(
                 CONF_SCANNER_INFO,
                 default=scanner_config_dict if not self._last_scanner_info else self._last_scanner_info,
@@ -539,13 +569,70 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             vol.Optional(CONF_SAVE_AND_CLOSE, default=False): vol.Coerce(bool),
         }
 
+        # Build description with helpful information
         description = (
             "**Configure per-scanner settings:**\n\n"
             "- **rssi_offset** (Advanced): Adjust signal strength, typically -10 to +10\n"
             "- **attenuation**: Environmental factor, 2.0-2.5 for open space, 4.0-5.0 for thick walls/concrete\n"
             "- **max_radius**: Maximum tracking distance in meters for this scanner\n\n"
             f"*Global defaults: attenuation={global_attenuation}, max_radius={global_max_radius}m*\n\n"
-            "⚠️ **Note:** Attenuation and max_radius are currently saved but not yet applied to tracking. "
+        )
+
+        # If a device is selected and we found the nearest scanner, show calibration info
+        if self._last_device and nearest_scanner_name and selected_device:
+            description += "---\n\n## 📍 Calibration Mode\n\n"
+            description += f"**Device:** {selected_device.name}\n\n"
+            description += f"**Nearest Scanner:** {nearest_scanner_name}\n\n"
+
+            if selected_device.area_distance is not None:
+                description += f"**Distance:** {selected_device.area_distance:.2f} meters\n\n"
+
+                # Get the RSSI for the nearest scanner
+                for scanner_addr in self.coordinator.scanner_list:
+                    scanner_device = self.coordinator.devices.get(scanner_addr)
+                    if scanner_device and scanner_device.name == nearest_scanner_name:
+                        advert = selected_device.get_scanner(scanner_addr)
+                        if advert is not None and advert.rssi is not None:
+                            description += f"**RSSI:** {advert.rssi} dBm\n\n"
+                        break
+
+            description += (
+                "*Adjust the scanner settings below to calibrate distance measurements. "
+                "Click Submit to refresh, or check Save and Close when finished.*\n"
+            )
+        elif self._last_device and selected_device:
+            # Device selected but not detected by any scanner (or area_name is None)
+            # Add debug info to help troubleshoot
+            description += "\n⚠️ **Debug Info:**\n\n"
+            description += f"- Device found: {selected_device.name}\n"
+            description += f"- Area name: {selected_device.area_name if selected_device.area_name else '(None)'}\n"
+            description += f"- Area distance: {selected_device.area_distance if selected_device.area_distance is not None else '(None)'}\n"
+            description += f"- Available scanners: {', '.join([self.coordinator.devices[s].name for s in self.coordinator.scanner_list])}\n\n"
+            description += (
+                "The device may not be detected by any scanner, or there may be a name mismatch. "
+                "Make sure the device is powered on and within range.\n"
+            )
+        elif self._last_device:
+            # Device ID provided but couldn't find the Bermuda device
+            description += (
+                "\n⚠️ **Device not found** in Bermuda tracking. Make sure this device is configured "
+                "in 'Select Devices' and is being tracked.\n"
+            )
+        else:
+            # No device selected - show all scanners for manual configuration
+            description += (
+                "\n💡 **Calibration Workflow:**\n"
+                "1. Place a tracked device near the scanner you want to calibrate\n"
+                "2. Select that device from the dropdown above\n"
+                "3. Click **Submit** - you'll see only that scanner's settings\n"
+                "4. Adjust settings until the distance is accurate\n"
+                "5. Check **Save and Close** when done\n"
+                "6. Repeat for other scanners\n\n"
+                "*Or edit all scanner settings manually below:*\n"
+            )
+
+        description += (
+            "\n\n⚠️ **Note:** Attenuation and max_radius are currently saved but not yet applied to tracking. "
             "Only rssi_offset is active."
         )
 
