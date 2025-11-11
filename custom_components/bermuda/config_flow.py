@@ -598,23 +598,21 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             if selected_device is not None:
                 description += f"hasattr __bool__: {hasattr(selected_device, '__bool__')}\n\n"
 
-        # If a device is selected, show nearest scanner info
+        # If a device is selected, dump ALL its properties
         if selected_device is not None:
             try:
-                description += "---\n\n## 📍 Calibration Info\n\n"
+                description += "---\n\n## 📍 RAW DEVICE DUMP\n\n"
 
-                if selected_device.area_advert:
-                    nearest_scanner_address = selected_device.area_advert.scanner_address
-                    nearest_scanner_name = self.coordinator.devices[nearest_scanner_address].name
+                # Dump every attribute we can find
+                description += f"dir(selected_device): {[x for x in dir(selected_device) if not x.startswith('_')]}\n\n"
 
-                    description += f"**Nearest Scanner:** {nearest_scanner_name}\n\n"
-                    description += f"**Distance:** {selected_device.area_distance:.2f}m\n\n"
-                    description += f"**RSSI:** {selected_device.area_rssi} dBm\n\n"
-
-                    # Only show settings for this nearest scanner
-                    scanners_to_show = [nearest_scanner_address]
-                else:
-                    description += "⚠️ Device not currently detected by any scanner\n\n"
+                # Try to access each property
+                for attr in ['name', 'address', 'area_name', 'area_distance', 'area_rssi', 'area_advert', 'adverts']:
+                    try:
+                        value = getattr(selected_device, attr, "ATTRIBUTE NOT FOUND")
+                        description += f"**{attr}:** {value}\n\n"
+                    except Exception as e:
+                        description += f"**{attr}:** ERROR - {e}\n\n"
 
             except Exception as e:
                 import traceback
