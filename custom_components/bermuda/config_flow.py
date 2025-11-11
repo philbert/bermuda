@@ -533,15 +533,16 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         if self._last_device:
             selected_device = self._get_bermuda_device_from_registry(self._last_device)
-            if selected_device is not None and selected_device.area_name:
-                # Find the scanner address for the nearest area
-                # The area_name matches the scanner's name
-                for scanner_addr in self.coordinator.scanner_list:
-                    scanner_device = self.coordinator.devices.get(scanner_addr)
-                    if scanner_device and scanner_device.name == selected_device.area_name:
-                        scanners_to_show = [scanner_addr]
-                        nearest_scanner_name = selected_device.area_name
-                        break
+            if selected_device is not None and selected_device.area_advert is not None:
+                # area_advert points to the BermudaAdvert for the nearest scanner
+                # Get the scanner address from the advert
+                scanner_address = selected_device.area_advert.scanner_address
+                if scanner_address in self.coordinator.scanner_list:
+                    scanners_to_show = [scanner_address]
+                    # Get the scanner name for display
+                    scanner_device = self.coordinator.devices.get(scanner_address)
+                    if scanner_device:
+                        nearest_scanner_name = scanner_device.name
 
         # If no device selected or no nearest scanner found, show all scanners
         if not scanners_to_show:
@@ -587,14 +588,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             if selected_device.area_distance is not None:
                 description += f"**Distance:** {selected_device.area_distance:.2f} meters\n\n"
 
-                # Get the RSSI for the nearest scanner
-                for scanner_addr in self.coordinator.scanner_list:
-                    scanner_device = self.coordinator.devices.get(scanner_addr)
-                    if scanner_device and scanner_device.name == nearest_scanner_name:
-                        advert = selected_device.get_scanner(scanner_addr)
-                        if advert is not None and advert.rssi is not None:
-                            description += f"**RSSI:** {advert.rssi} dBm\n\n"
-                        break
+            # Get RSSI directly from area_advert
+            if selected_device.area_advert is not None and selected_device.area_advert.rssi is not None:
+                description += f"**RSSI:** {selected_device.area_advert.rssi} dBm\n\n"
 
             description += (
                 "*Adjust the scanner settings below to calibrate distance measurements. "
@@ -685,9 +681,12 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         Returns None if the id can not be resolved to a tracked device.
         """
+        from .const import _LOGGER
+
         devreg = dr.async_get(self.hass)
         device = devreg.async_get(registry_id)
         if device is None:
+            _LOGGER.debug("_get_bermuda_device: HA device not found for registry_id %s", registry_id)
             return None
 
         device_address = None
@@ -701,18 +700,31 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 break
 
         if device_address is None:
+            _LOGGER.debug("_get_bermuda_device: No bluetooth connection found for %s", device.name)
             return None
 
         # Normalize the address format to match coordinator.devices keys
         normalized_address = mac_norm(device_address)
+        _LOGGER.debug(
+            "_get_bermuda_device: Looking for address=%s, normalized=%s, in_devices=%s",
+            device_address,
+            normalized_address,
+            normalized_address in self.coordinator.devices,
+        )
+
         if normalized_address in self.coordinator.devices:
-            return self.coordinator.devices[normalized_address]
+            result = self.coordinator.devices[normalized_address]
+            _LOGGER.debug("_get_bermuda_device: Found! Returning device %s", result.name)
+            return result
 
         # Try lowercase as fallback
         if device_address.lower() in self.coordinator.devices:
-            return self.coordinator.devices[device_address.lower()]
+            result = self.coordinator.devices[device_address.lower()]
+            _LOGGER.debug("_get_bermuda_device: Found via lowercase! Returning device %s", result.name)
+            return result
 
         # We couldn't match the HA device id to a bermuda device mac.
+        _LOGGER.warning("_get_bermuda_device: Address %s not found in coordinator.devices", normalized_address)
         return None
 
     async def _update_options(self):
