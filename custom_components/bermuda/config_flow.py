@@ -636,8 +636,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     normalized = mac_norm(device_address)
                     description += f"- Extracted address: `{device_address}`\n"
                     description += f"- Normalized: `{normalized}`\n"
-                    description += f"- In coordinator.devices? {normalized in self.coordinator.devices}\n\n"
+                    description += f"- In coordinator.devices? {normalized in self.coordinator.devices}\n"
 
+                    if normalized in self.coordinator.devices:
+                        bermuda_dev = self.coordinator.devices[normalized]
+                        description += f"- create_sensor flag: {bermuda_dev.create_sensor}\n"
+                        description += f"- Is scanner: {bermuda_dev._is_scanner}\n"
+
+                    description += "\n"
                     # Show some coordinator device keys for comparison
                     sample_keys = list(self.coordinator.devices.keys())[:5]
                     description += f"- Sample coordinator keys: {sample_keys}\n"
@@ -676,32 +682,44 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     def _get_bermuda_device_from_registry(self, registry_id: str) -> BermudaDevice | None:
         """
-        Given a device registry device id, return the associated MAC address.
+        Given a device registry device id, return the associated BermudaDevice.
 
-        Returns None if the id can not be resolved to a mac.
+        Returns None if the id can not be resolved to a tracked device.
         """
         from .util import mac_norm
 
-        devreg = dr.async_get(self.hass)
-        device = devreg.async_get(registry_id)
-        device_address = None
-        if device is not None:
-            for connection in device.connections:
-                if connection[0] in {
-                    DOMAIN_PRIVATE_BLE_DEVICE,
-                    dr.CONNECTION_BLUETOOTH,
-                    "ibeacon",
-                }:
-                    device_address = connection[1]
-                    break
-            if device_address is not None:
-                # Normalize the address format to match coordinator.devices keys
-                normalized_address = mac_norm(device_address)
-                if normalized_address in self.coordinator.devices:
-                    return self.coordinator.devices[normalized_address]
-                # Try lowercase as fallback
-                if device_address.lower() in self.coordinator.devices:
-                    return self.coordinator.devices[device_address.lower()]
+        try:
+            devreg = dr.async_get(self.hass)
+            device = devreg.async_get(registry_id)
+            device_address = None
+            if device is not None:
+                for connection in device.connections:
+                    if connection[0] in {
+                        DOMAIN_PRIVATE_BLE_DEVICE,
+                        dr.CONNECTION_BLUETOOTH,
+                        "ibeacon",
+                    }:
+                        device_address = connection[1]
+                        break
+                if device_address is not None:
+                    # Normalize the address format to match coordinator.devices keys
+                    normalized_address = mac_norm(device_address)
+                    if normalized_address in self.coordinator.devices:
+                        bermuda_device = self.coordinator.devices[normalized_address]
+                        # Make sure it's actually a BermudaDevice for a tracked device, not a scanner
+                        if bermuda_device.create_sensor:
+                            return bermuda_device
+                    # Try lowercase as fallback
+                    if device_address.lower() in self.coordinator.devices:
+                        bermuda_device = self.coordinator.devices[device_address.lower()]
+                        if bermuda_device.create_sensor:
+                            return bermuda_device
+        except Exception as e:
+            # Log the error but don't crash
+            import logging
+            _LOGGER = logging.getLogger(__name__)
+            _LOGGER.error("Error getting bermuda device from registry: %s", e)
+
         # We couldn't match the HA device id to a bermuda device mac.
         return None
 
