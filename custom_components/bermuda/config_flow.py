@@ -477,8 +477,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         to calculations. This will be enabled in a future update.
         """
         if user_input is not None:
-            if user_input[CONF_SAVE_AND_CLOSE]:
-                # Convert the name-based nested dict to address-based dicts
+            # Check what button was clicked
+            if user_input.get(CONF_SAVE_AND_CLOSE, False):
+                # Save and close
                 rssi_offset_by_address = {}
                 attenuation_by_address = {}
                 max_radius_by_address = {}
@@ -512,10 +513,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 })
 
                 return await self._update_options()
-
-            # User clicked Submit without Save - refresh display with current values
-            self._last_scanner_info = user_input[CONF_SCANNER_INFO]
-            self._last_device = user_input.get(CONF_DEVICES)
+            else:
+                # User changed something or clicked refresh - update display with current values
+                self._last_scanner_info = user_input[CONF_SCANNER_INFO]
+                self._last_device = user_input.get(CONF_DEVICES)
 
         # Load saved values and global defaults
         saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
@@ -553,17 +554,28 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 "max_radius": saved_max_radii.get(scanner, global_max_radius),
             }
 
+        # Build schema with refresh button appearing after device selector if device selected
+        from homeassistant.helpers.selector import ButtonSelector
+
         data_schema = {
             vol.Optional(
                 CONF_DEVICES,
                 default=self._last_device if self._last_device is not None else vol.UNDEFINED,
             ): DeviceSelector(DeviceSelectorConfig(integration=DOMAIN)),
+        }
+
+        # Add refresh button if a device is selected
+        if self._last_device:
+            data_schema[vol.Optional("refresh_calibration", default=False)] = ButtonSelector()
+
+        # Add scanner settings and save button
+        data_schema.update({
             vol.Required(
                 CONF_SCANNER_INFO,
                 default=scanner_config_dict if not self._last_scanner_info else self._last_scanner_info,
             ): ObjectSelector(),
             vol.Optional(CONF_SAVE_AND_CLOSE, default=False): vol.Coerce(bool),
-        }
+        })
 
         # Build description with helpful information
         description = (
