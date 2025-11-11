@@ -544,28 +544,6 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                             selected_device = self.coordinator.devices[normalized]
                             break
 
-        # Build nested dict for scanners to display
-        scanner_config_dict = {}
-        for scanner in scanners_to_show:
-            scanner_name = self.coordinator.devices[scanner].name
-            scanner_config_dict[scanner_name] = {
-                "rssi_offset": saved_rssi_offsets.get(scanner, 0),
-                "attenuation": saved_attenuations.get(scanner, global_attenuation),
-                "max_radius": saved_max_radii.get(scanner, global_max_radius),
-            }
-
-        data_schema = {
-            vol.Optional(
-                CONF_DEVICES,
-                default=self._last_device if self._last_device is not None else vol.UNDEFINED,
-            ): DeviceSelector(DeviceSelectorConfig(integration=DOMAIN)),
-            vol.Required(
-                CONF_SCANNER_INFO,
-                default=scanner_config_dict if not self._last_scanner_info else self._last_scanner_info,
-            ): ObjectSelector(),
-            vol.Optional(CONF_SAVE_AND_CLOSE, default=False): vol.Coerce(bool),
-        }
-
         # Same hack as calibration1_global to work around placeholder issues with <details> tags
         _ugly_token_hack = {
             "details": "<details>",
@@ -577,7 +555,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         # Start building the dynamic suffix content (calibration info will be added below)
         description = ""
 
-        # If a device is selected, show calibration info and filter to nearest scanner
+        # If a device is selected, filter to nearest scanner and show calibration info
         if selected_device is not None:
             try:
                 from homeassistant.helpers import entity_registry as er
@@ -621,6 +599,28 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
             except Exception as e:
                 description += f"⚠️ Could not load calibration info: {e}\n\n"
+
+        # Build nested dict for scanners to display (after filtering to nearest scanner if applicable)
+        scanner_config_dict = {}
+        for scanner in scanners_to_show:
+            scanner_name = self.coordinator.devices[scanner].name
+            scanner_config_dict[scanner_name] = {
+                "rssi_offset": saved_rssi_offsets.get(scanner, 0),
+                "attenuation": saved_attenuations.get(scanner, global_attenuation),
+                "max_radius": saved_max_radii.get(scanner, global_max_radius),
+            }
+
+        data_schema = {
+            vol.Optional(
+                CONF_DEVICES,
+                default=self._last_device if self._last_device is not None else vol.UNDEFINED,
+            ): DeviceSelector(DeviceSelectorConfig(integration=DOMAIN)),
+            vol.Required(
+                CONF_SCANNER_INFO,
+                default=scanner_config_dict if not self._last_scanner_info else self._last_scanner_info,
+            ): ObjectSelector(),
+            vol.Optional(CONF_SAVE_AND_CLOSE, default=False): vol.Coerce(bool),
+        }
 
         return self.async_show_form(
             step_id="calibration2_scanners",
