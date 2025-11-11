@@ -577,6 +577,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         # Start building the dynamic suffix content (calibration info will be added below)
         description = ""
 
+        # DEBUG
+        description += f"**DEBUG:** scanners_to_show initial count: {len(scanners_to_show)}\n\n"
+
         # If a device is selected, filter to nearest scanner and show calibration info
         if selected_device is not None:
             try:
@@ -632,6 +635,11 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 "max_radius": saved_max_radii.get(scanner, global_max_radius),
             }
 
+        description += f"**DEBUG:** scanner_config_dict keys after build: {list(scanner_config_dict.keys())}\n\n"
+        description += f"**DEBUG:** self._last_scanner_info is None: {self._last_scanner_info is None}\n\n"
+        if self._last_scanner_info:
+            description += f"**DEBUG:** self._last_scanner_info keys: {list(self._last_scanner_info.keys())}\n\n"
+
         # If we have previous user input, filter it to only include scanners we want to show
         if self._last_scanner_info:
             scanner_names_to_show = set(scanner_config_dict.keys())
@@ -644,6 +652,8 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             default_scanner_info = filtered_scanner_info if filtered_scanner_info else scanner_config_dict
         else:
             default_scanner_info = scanner_config_dict
+
+        description += f"**DEBUG:** default_scanner_info keys FINAL: {list(default_scanner_info.keys())}\n\n"
 
         data_schema = {
             vol.Optional(
