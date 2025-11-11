@@ -32,7 +32,9 @@ from .const import (
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
     CONF_SAVE_AND_CLOSE,
+    CONF_SCANNER_ATTENUATION,
     CONF_SCANNER_INFO,
+    CONF_SCANNER_MAX_RADIUS,
     CONF_SCANNERS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
@@ -188,8 +190,8 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             menu_options={
                 "globalopts": "Global Options",
                 "selectdevices": "Select Devices",
-                "calibration1_global": "Calibration 1: Global",
-                "calibration2_scanners": "Calibration 2: Scanner RSSI Offsets",
+                "calibration1_global": "Calibration 1: Global Settings",
+                "calibration2_scanners": "Calibration 2: Per-Scanner Configuration",
             },
             description_placeholders=messages,
         )
@@ -462,99 +464,95 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     async def async_step_calibration2_scanners(self, user_input=None):
         """
-        Per-scanner calibration of rssi_offset.
+        Per-scanner configuration.
 
-        Prompts the user to select a configured device, then adjust the offset
-        so that the estimated distance to each proxy is correct (typically by
-        placing device at 1m from each proxy in turn).
+        Configure individual settings for each BLE scanner/proxy:
+        - RSSI Offset: Fine-tune signal strength readings (advanced)
+        - Attenuation: Environmental absorption factor (lower=open space, higher=thick walls)
+        - Max Radius: Maximum tracking distance for this scanner (in meters)
 
-        Distances are recalculated and displayed each time the user presses
-        Submit, and they check "Save and Close" to save the config.
+        NOTE: Attenuation and Max Radius settings are currently UI-only and not yet applied
+        to calculations. This will be enabled in a future update.
         """
         if user_input is not None:
             if user_input[CONF_SAVE_AND_CLOSE]:
-                # Convert the name-based dict to use MAC addresses
+                # Convert the name-based nested dict to address-based dicts
                 rssi_offset_by_address = {}
+                attenuation_by_address = {}
+                max_radius_by_address = {}
+
+                # Get global defaults for fallback
+                global_attenuation = self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+                global_max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
                 for address in self.coordinator.scanner_list:
                     scanner_name = self.coordinator.devices[address].name
-                    val = user_input[CONF_SCANNER_INFO][scanner_name]
-                    # Clip to keep in sensible range, fixes #497
-                    rssi_offset_by_address[address] = max(min(val, 127), -127)
+                    scanner_data = user_input[CONF_SCANNER_INFO].get(scanner_name, {})
 
-                self.options.update({CONF_RSSI_OFFSETS: rssi_offset_by_address})
-                # Per previous step, returning elsewhere in the flow after updating the entry doesn't
-                # seem to work, so we'll just save and close the flow.
-                # # Let's update the options - but we don't want to call create entry as that will close the flow.
-                # self.hass.config_entries.async_update_entry(self.config_entry, options=self.options)
-                # # Reset last device so that the next step doesn't think it exists.
-                # self._last_device = None
-                # self._last_scanner_info = None
-                # return await self.async_step_init()
+                    # RSSI Offset - clip to sensible range, fixes #497
+                    rssi_val = scanner_data.get("rssi_offset", 0)
+                    rssi_offset_by_address[address] = max(min(rssi_val, 127), -127)
 
-                # Save the config entry and close the flow.
+                    # Attenuation - store if different from global default
+                    atten_val = scanner_data.get("attenuation", global_attenuation)
+                    if atten_val != global_attenuation:
+                        attenuation_by_address[address] = max(min(float(atten_val), 10.0), 1.0)
+
+                    # Max Radius - store if different from global default
+                    radius_val = scanner_data.get("max_radius", global_max_radius)
+                    if radius_val != global_max_radius:
+                        max_radius_by_address[address] = max(min(float(radius_val), 100.0), 1.0)
+
+                self.options.update({
+                    CONF_RSSI_OFFSETS: rssi_offset_by_address,
+                    CONF_SCANNER_ATTENUATION: attenuation_by_address,
+                    CONF_SCANNER_MAX_RADIUS: max_radius_by_address,
+                })
+
                 return await self._update_options()
 
-            # It's a refresh, basically...
+            # User clicked Submit without Save - refresh display with current values
             self._last_scanner_info = user_input[CONF_SCANNER_INFO]
-            self._last_device = user_input[CONF_DEVICES]
 
+        # Load saved values and global defaults
         saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
-        rssi_offset_dict = {}
+        saved_attenuations = self.options.get(CONF_SCANNER_ATTENUATION, {})
+        saved_max_radii = self.options.get(CONF_SCANNER_MAX_RADIUS, {})
+        global_attenuation = self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+        global_max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
 
+        # Build nested dict for each scanner
+        scanner_config_dict = {}
         for scanner in self.coordinator.scanner_list:
             scanner_name = self.coordinator.devices[scanner].name
-            rssi_offset_dict[scanner_name] = saved_rssi_offsets.get(scanner, 0)
+            scanner_config_dict[scanner_name] = {
+                "rssi_offset": saved_rssi_offsets.get(scanner, 0),
+                "attenuation": saved_attenuations.get(scanner, global_attenuation),
+                "max_radius": saved_max_radii.get(scanner, global_max_radius),
+            }
+
         data_schema = {
             vol.Required(
-                CONF_DEVICES,
-                default=self._last_device if self._last_device is not None else vol.UNDEFINED,
-            ): DeviceSelector(DeviceSelectorConfig(integration=DOMAIN)),
-            vol.Required(
                 CONF_SCANNER_INFO,
-                default=rssi_offset_dict if not self._last_scanner_info else self._last_scanner_info,
+                default=scanner_config_dict if not self._last_scanner_info else self._last_scanner_info,
             ): ObjectSelector(),
             vol.Optional(CONF_SAVE_AND_CLOSE, default=False): vol.Coerce(bool),
         }
-        if user_input is None:
-            return self.async_show_form(
-                step_id="calibration2_scanners",
-                data_schema=vol.Schema(data_schema),
-                description_placeholders={"suffix": "After you click Submit, the new distances will be shown here."},
-            )
-        if isinstance(self._last_device, str):
-            device = self._get_bermuda_device_from_registry(self._last_device)
-        results_str = ""
-        if device is not None and isinstance(self._last_scanner_info, dict):
-            results = {}
-            # Gather new estimates for distances using rssi hist and the new offset.
-            for scanner in self.coordinator.scanner_list:
-                scanner_name = self.coordinator.devices[scanner].name
-                cur_offset = self._last_scanner_info.get(scanner_name, 0)
-                if (scanneradvert := device.get_scanner(scanner)) is not None:
-                    results[scanner_name] = [
-                        rssi_to_metres(
-                            historical_rssi + cur_offset,
-                            self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER),
-                            self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION),
-                        )
-                        for historical_rssi in scanneradvert.hist_rssi
-                    ]
-            # Format the results for display (HA has full markdown support!)
-            results_str = "| Scanner | 0 | 1 | 2 | 3 | 4 |\n|---|---:|---:|---:|---:|---:|"
-            for scanner_name, distances in results.items():
-                results_str += f"\n|{scanner_name}|"
-                for i in range(5):
-                    # We round to 2 places (1cm) and pad to fit nn.nn
-                    try:
-                        results_str += f" `{distances[i]:>6.2f}`|"
-                    except IndexError:
-                        results_str += "`-`|"
-            results_str += "\n\n"
+
+        description = (
+            "**Configure per-scanner settings:**\n\n"
+            "- **rssi_offset** (Advanced): Adjust signal strength, typically -10 to +10\n"
+            "- **attenuation**: Environmental factor, 2.0-2.5 for open space, 4.0-5.0 for thick walls/concrete\n"
+            "- **max_radius**: Maximum tracking distance in meters for this scanner\n\n"
+            f"*Global defaults: attenuation={global_attenuation}, max_radius={global_max_radius}m*\n\n"
+            "⚠️ **Note:** Attenuation and max_radius are currently saved but not yet applied to tracking. "
+            "Only rssi_offset is active."
+        )
 
         return self.async_show_form(
             step_id="calibration2_scanners",
             data_schema=vol.Schema(data_schema),
-            description_placeholders={"suffix": results_str},
+            description_placeholders={"suffix": description},
         )
 
     def _get_bermuda_device_from_registry(self, registry_id: str) -> BermudaDevice | None:
