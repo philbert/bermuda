@@ -588,7 +588,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         # If a device is selected, filter to nearest scanner and show calibration info
         if selected_device is not None:
-            _LOGGER.debug("Device selected for calibration: %s (address: %s)", selected_device.name, selected_device.address)
+            _LOGGER.debug("bermuda_scanner_filtering: Device selected for calibration: %s (address: %s)", selected_device.name, selected_device.address)
             try:
                 # Try to find the nearest scanner - prefer area_advert if set,
                 # otherwise manually find the closest one from adverts
@@ -597,30 +597,35 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 if selected_device.area_advert is not None:
                     # Use the already-determined nearest scanner
                     nearest_advert = selected_device.area_advert
-                    _LOGGER.debug("Using area_advert for calibration info: %s", nearest_advert.scanner_address)
+                    _LOGGER.debug("bermuda_scanner_filtering: Using area_advert for calibration info: %s", nearest_advert.scanner_address)
                 else:
                     # Manually find the closest scanner by looking through adverts
-                    _LOGGER.debug("area_advert is None, searching through %d adverts", len(selected_device.adverts))
+                    _LOGGER.debug("bermuda_scanner_filtering: area_advert is None, searching through %d adverts", len(selected_device.adverts))
                     closest_distance = float('inf')
                     for advert in selected_device.adverts.values():
                         if advert.rssi_distance is not None and advert.rssi_distance < closest_distance:
                             closest_distance = advert.rssi_distance
                             nearest_advert = advert
                     if nearest_advert:
-                        _LOGGER.debug("Found nearest scanner via manual search: %s at %.1fm",
+                        _LOGGER.debug("bermuda_scanner_filtering: Found nearest scanner via manual search: %s at %.1fm",
                                       nearest_advert.scanner_address, closest_distance)
 
                 if nearest_advert is not None:
                     nearest_scanner_address = nearest_advert.scanner_address
                     nearest_scanner_device = self.coordinator.devices.get(nearest_scanner_address)
+                    _LOGGER.debug("bermuda_scanner_filtering: nearest_scanner_address=%s, device_found=%s",
+                                  nearest_scanner_address,
+                                  "Yes" if nearest_scanner_device else "No")
 
                     if nearest_scanner_device:
+                        _LOGGER.debug("bermuda_scanner_filtering: Building calibration info for %s", nearest_scanner_device.name)
                         description += "---\n\n## 📍 Calibration Info\n\n"
                         description += f"**Nearest Scanner:** {nearest_scanner_device.name}\n\n"
 
                         # Get distance and RSSI directly from the advert
                         distance = nearest_advert.rssi_distance
                         rssi = nearest_advert.rssi
+                        _LOGGER.debug("bermuda_scanner_filtering: distance=%s, rssi=%s", distance, rssi)
 
                         if distance is not None:
                             description += f"**Distance:** {distance:.1f}m\n\n"
@@ -631,15 +636,21 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
                         # Filter to show only the nearest scanner's settings
                         scanners_to_show = [nearest_scanner_address]
+                        _LOGGER.debug("bermuda_scanner_filtering: Filtered scanners_to_show to: %s", scanners_to_show)
+                    else:
+                        _LOGGER.debug("bermuda_scanner_filtering: nearest_scanner_device is None, cannot build calibration info")
                 else:
-                    _LOGGER.debug("No nearest advert found for device %s", selected_device.name)
+                    _LOGGER.debug("bermuda_scanner_filtering: No nearest advert found for device %s", selected_device.name)
                     description += "---\n\n⚠️ Device not currently detected by any scanner\n\n"
 
             except Exception as e:
-                _LOGGER.warning("Error loading calibration info: %s", e, exc_info=True)
+                _LOGGER.warning("bermuda_scanner_filtering: Error loading calibration info: %s", e, exc_info=True)
                 description += f"⚠️ Could not load calibration info: {e}\n\n"
         else:
-            _LOGGER.debug("No device selected for calibration (last_device: %s)", self._last_device)
+            _LOGGER.debug("bermuda_scanner_filtering: No device selected for calibration (last_device: %s)", self._last_device)
+
+        _LOGGER.debug("bermuda_scanner_filtering: Final description length: %d characters, scanners_to_show: %s",
+                      len(description), scanners_to_show)
 
         # Build nested dict for scanners to display (after filtering to nearest scanner if applicable)
         scanner_config_dict = {}
