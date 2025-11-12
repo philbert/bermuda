@@ -616,12 +616,13 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     _LOGGER.debug("bermuda_scanner_filtering: coordinator.devices keys sample: %s", list(self.coordinator.devices.keys())[:5])
                     _LOGGER.debug("bermuda_scanner_filtering: coordinator.scanner_list sample: %s", list(self.coordinator.scanner_list)[:5])
                     nearest_scanner_device = self.coordinator.devices.get(nearest_scanner_address)
-                    _LOGGER.debug("bermuda_scanner_filtering: nearest_scanner_address=%s, device_found=%s",
+                    _LOGGER.debug("bermuda_scanner_filtering: nearest_scanner_address=%s, device_found=%s, device_type=%s",
                                   nearest_scanner_address,
-                                  "Yes" if nearest_scanner_device else "No")
+                                  "Yes" if nearest_scanner_device is not None else "No",
+                                  type(nearest_scanner_device).__name__ if nearest_scanner_device is not None else "None")
 
                     # If not found, check if there's a case/format mismatch
-                    if not nearest_scanner_device:
+                    if nearest_scanner_device is None:
                         matching_keys = [k for k in self.coordinator.devices.keys() if k.lower() == nearest_scanner_address.lower()]
                         if matching_keys:
                             _LOGGER.warning("bermuda_scanner_filtering: Scanner address mismatch! Looking for '%s' but found '%s'",
@@ -630,7 +631,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                             _LOGGER.warning("bermuda_scanner_filtering: Scanner '%s' not in coordinator.devices at all (total devices: %d)",
                                           nearest_scanner_address, len(self.coordinator.devices))
 
-                    if nearest_scanner_device:
+                    if nearest_scanner_device is not None:
                         _LOGGER.debug("bermuda_scanner_filtering: Building calibration info for %s", nearest_scanner_device.name)
                         description += "---\n\n## 📍 Calibration Info\n\n"
                         description += f"**Nearest Scanner:** {nearest_scanner_device.name}\n\n"
