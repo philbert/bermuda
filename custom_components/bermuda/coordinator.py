@@ -1307,7 +1307,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         # The current area_scanner (which might be None) is the one to beat.
         incumbent: BermudaAdvert | None = device.area_advert
 
-        _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
         nowstamp = monotonic_time_coarse()
 
         tests = self.AreaTests()
@@ -1347,9 +1346,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 continue
 
             # If we are too far away or don't have an area, we cannot win...
+            # Use per-scanner max_radius (each scanner has its own configured maximum)
             if (
                 challenger.rssi_distance is None
-                or challenger.rssi_distance > _max_radius
+                or challenger.rssi_distance > challenger.conf_max_radius
                 or challenger.area_id is None
             ):
                 continue

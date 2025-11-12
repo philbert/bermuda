@@ -472,9 +472,6 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         - Max Radius: Maximum tracking distance for this scanner (in meters)
 
         Select a device to see real-time distance estimates for calibration.
-
-        NOTE: Attenuation and Max Radius settings are currently UI-only and not yet applied
-        to calculations. This will be enabled in a future update.
         """
         if user_input is not None:
             # Always save on submit - merge submitted values with existing saved values

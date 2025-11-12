@@ -94,9 +94,24 @@ class BermudaAdvert(dict):
         self.hist_distance_by_interval: list[float] = []  # updated per-interval
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
+        # Get scanner-specific settings with fallback to global defaults
         self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
         self.conf_ref_power = self.options.get(CONF_REF_POWER)
-        self.conf_attenuation = self.options.get(CONF_ATTENUATION)
+
+        # Per-scanner attenuation with fallback to global
+        scanner_attenuations = self.options.get(CONF_SCANNER_ATTENUATION, {})
+        self.conf_attenuation = scanner_attenuations.get(
+            self.scanner_address,
+            self.options.get(CONF_ATTENUATION)
+        )
+
+        # Per-scanner max_radius with fallback to global
+        scanner_max_radii = self.options.get(CONF_SCANNER_MAX_RADIUS, {})
+        self.conf_max_radius = scanner_max_radii.get(
+            self.scanner_address,
+            self.options.get(CONF_MAX_RADIUS)
+        )
+
         self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
         self.local_name: list[tuple[str, bytes]] = []
