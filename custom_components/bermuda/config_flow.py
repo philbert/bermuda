@@ -524,6 +524,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             # Save without closing - update the config entry
             self.hass.config_entries.async_update_entry(self.config_entry, options=self.options)
 
+            # Update coordinator's options and reload advert configs for immediate effect
+            self.coordinator.options.update(self.options)
+            self.coordinator.reload_advert_configs()
+
             # Update state and refresh display
             new_device = user_input.get(CONF_DEVICES)
 

@@ -164,6 +164,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self.stamp_redactions_expiry: float | None = None
 
         self.update_in_progress: bool = False  # A lock to guard against huge backlogs / slow processing
+        self.config_reload_in_progress: bool = False  # A lock to prevent concurrent config reloads
         self.stamp_last_update: float = 0  # Last time we ran an update, from monotonic_time_coarse()
         self.stamp_last_update_started: float = 0
         self.stamp_last_prune: float = 0  # When we last pruned device list
@@ -322,6 +323,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self._scanner_list.remove(scanner_device.address)
         self._scanners.remove(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
+
+    def reload_advert_configs(self):
+        """
+        Reload configuration on all existing BermudaAdvert objects.
+
+        Called after config changes to reflect new settings immediately
+        without waiting for full integration reload.
+
+        Returns True if reload was performed, False if skipped due to
+        concurrent reload already in progress.
+        """
+        if self.config_reload_in_progress:
+            _LOGGER.debug("Config reload already in progress, skipping")
+            return False
+
+        self.config_reload_in_progress = True
+        try:
+            for device in self.devices.values():
+                for advert in device.adverts.values():
+                    advert.reload_config()
+            return True
+        finally:
+            self.config_reload_in_progress = False
 
     def get_manufacturer_from_id(self, uuid: int | str) -> tuple[str, bool] | tuple[None, None]:
         """

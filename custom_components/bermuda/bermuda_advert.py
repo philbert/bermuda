@@ -21,9 +21,12 @@ from bluetooth_data_tools import monotonic_time_coarse
 from .const import (
     _LOGGER,
     CONF_ATTENUATION,
+    CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
+    CONF_SCANNER_ATTENUATION,
+    CONF_SCANNER_MAX_RADIUS,
     CONF_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
     DISTANCE_TIMEOUT,
@@ -121,6 +124,38 @@ class BermudaAdvert(dict):
 
         # Just pass the rest on to update...
         self.update_advertisement(advertisementdata, self.scanner_device)
+
+    def reload_config(self):
+        """
+        Reload configuration values from options.
+
+        Called when config is updated to reflect changes immediately
+        without waiting for full integration reload.
+        """
+        # Get scanner-specific settings with fallback to global defaults
+        self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
+        self.conf_ref_power = self.options.get(CONF_REF_POWER)
+
+        # Per-scanner attenuation with fallback to global
+        scanner_attenuations = self.options.get(CONF_SCANNER_ATTENUATION, {})
+        self.conf_attenuation = scanner_attenuations.get(
+            self.scanner_address,
+            self.options.get(CONF_ATTENUATION)
+        )
+
+        # Per-scanner max_radius with fallback to global
+        scanner_max_radii = self.options.get(CONF_SCANNER_MAX_RADIUS, {})
+        self.conf_max_radius = scanner_max_radii.get(
+            self.scanner_address,
+            self.options.get(CONF_MAX_RADIUS)
+        )
+
+        self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
+        self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
+
+        # Recalculate distance with new settings if we have a current reading
+        if self.rssi is not None:
+            self._update_raw_distance(reading_is_new=False)
 
     def apply_new_scanner(self, scanner_device: BermudaDevice):
         self.name: str = scanner_device.name  # or scandata.scanner.name
