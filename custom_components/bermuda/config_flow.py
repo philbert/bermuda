@@ -501,6 +501,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     # Track that this scanner was in the submitted form
                     modified_scanners.add(scanner_address)
 
+                    _LOGGER.debug("bermuda_distance_calc: Processing scanner '%s' address=%s",
+                                  scanner_name, scanner_address)
+
                     # RSSI Offset - clip to sensible range, fixes #497
                     rssi_val = scanner_data.get("rssi_offset", 0)
                     saved_rssi_offsets[scanner_address] = max(min(rssi_val, 127), -127)
@@ -509,9 +512,13 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     atten_val = scanner_data.get("attenuation", global_attenuation)
                     if atten_val != global_attenuation:
                         saved_attenuations[scanner_address] = max(min(float(atten_val), 10.0), 1.0)
+                        _LOGGER.debug("bermuda_distance_calc: Saved attenuation=%s for %s (global=%s)",
+                                      saved_attenuations[scanner_address], scanner_address, global_attenuation)
                     elif scanner_address in saved_attenuations:
                         # Value matches global default, remove override
                         del saved_attenuations[scanner_address]
+                        _LOGGER.debug("bermuda_distance_calc: Removed attenuation override for %s (matches global)",
+                                      scanner_address)
 
                     # Max Radius - store if different from global default
                     radius_val = scanner_data.get("max_radius", global_max_radius)
@@ -533,6 +540,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
             # Update coordinator's options and reload advert configs for immediate effect
             # Only reload adverts for the scanners that were actually modified (more efficient)
+            _LOGGER.debug("bermuda_distance_calc: About to reload configs for scanners: %s", modified_scanners)
+            _LOGGER.debug("bermuda_distance_calc: Updated options - CONF_SCANNER_ATTENUATION: %s",
+                          self.options.get(CONF_SCANNER_ATTENUATION))
             self.coordinator.options.update(self.options)
             self.coordinator.reload_advert_configs(scanner_addresses=modified_scanners)
 

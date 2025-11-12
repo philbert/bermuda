@@ -355,12 +355,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
             if scanner_addresses:
                 _LOGGER.debug(
-                    "bermuda_scanner_filtering: Reloaded config for %d adverts across %d scanner(s)",
+                    "bermuda_distance_calc: Reloaded config for %d adverts across %d scanner(s): %s",
                     reload_count,
                     len(scanner_addresses),
+                    scanner_addresses,
                 )
             else:
-                _LOGGER.debug("bermuda_scanner_filtering: Reloaded config for all %d adverts", reload_count)
+                _LOGGER.debug("bermuda_distance_calc: Reloaded config for all %d adverts", reload_count)
             return True
         finally:
             self.config_reload_in_progress = False
