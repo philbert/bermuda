@@ -588,41 +588,28 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         # If a device is selected, filter to nearest scanner and show calibration info
         if selected_device is not None:
             try:
-                from homeassistant.helpers import entity_registry as er
+                # Use area_advert as the single source of truth for nearest scanner
+                # This ensures calibration info and scanner filtering are always in sync
+                if selected_device.area_advert is not None:
+                    nearest_scanner_address = selected_device.area_advert.scanner_address
+                    nearest_scanner_device = self.coordinator.devices.get(nearest_scanner_address)
 
-                # Get entity registry to read Bermuda sensor states
-                entity_reg = er.async_get(self.hass)
-                entities = er.async_entries_for_device(entity_reg, self._last_device, include_disabled_entities=True)
-                bermuda_entities = [e for e in entities if e.platform == DOMAIN]
+                    if nearest_scanner_device:
+                        description += "---\n\n## 📍 Calibration Info\n\n"
+                        description += f"**Nearest Scanner:** {nearest_scanner_device.name}\n\n"
 
-                # Find the sensor values we need
-                nearest_scanner_name = None
-                distance = None
-                rssi = None
+                        # Get distance and RSSI directly from the advert
+                        distance = selected_device.area_advert.rssi_distance
+                        rssi = selected_device.area_advert.rssi
 
-                for entity in bermuda_entities:
-                    state = self.hass.states.get(entity.entity_id)
-                    if state:
-                        if entity.original_name == "Nearest Scanner":
-                            nearest_scanner_name = state.state
-                        elif entity.original_name == "Distance":
-                            distance = state.state
-                        elif entity.original_name == "Nearest RSSI":
-                            rssi = state.state
+                        if distance is not None:
+                            description += f"**Distance:** {distance:.1f}m\n\n"
+                        if rssi is not None:
+                            description += f"**RSSI:** {rssi:.0f} dBm\n\n"
 
-                if nearest_scanner_name and nearest_scanner_name != "unavailable":
-                    description += "---\n\n## 📍 Calibration Info\n\n"
-                    description += f"**Nearest Scanner:** {nearest_scanner_name}\n\n"
-                    if distance and distance != "unavailable":
-                        description += f"**Distance:** {distance}m\n\n"
-                    if rssi and rssi != "unavailable":
-                        description += f"**RSSI:** {rssi} dBm\n\n"
+                        description += "*💡 Click **Submit** to refresh these readings*\n\n"
 
-                    description += "*💡 Click **Submit** to refresh these readings*\n\n"
-
-                    # Filter to show only the nearest scanner's settings
-                    if selected_device.area_advert is not None:
-                        nearest_scanner_address = selected_device.area_advert.scanner_address
+                        # Filter to show only the nearest scanner's settings
                         scanners_to_show = [nearest_scanner_address]
                 else:
                     description += "---\n\n⚠️ Device not currently detected by any scanner\n\n"
