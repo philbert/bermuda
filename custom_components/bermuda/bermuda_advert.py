@@ -14,12 +14,14 @@ to the combination of the scanner and the device it is reporting.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Final
 
 from bluetooth_data_tools import monotonic_time_coarse
 
+_LOGGER = logging.getLogger(__name__)
+
 from .const import (
-    _LOGGER,
     CONF_ATTENUATION,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
@@ -334,7 +336,7 @@ class BermudaAdvert(dict):
         if self._device.create_sensor and self.scanner_device.name == "Living room light switch 2":
             adjusted_rssi = self.rssi + self.conf_rssi_offset
             _LOGGER.debug(
-                "bermuda_distance_calc: Device=%s, Scanner=%s, "
+                "Device=%s, Scanner=%s, "
                 "raw_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
                 "ref_power=%s, attenuation=%s",
                 self._device.name,
@@ -352,7 +354,7 @@ class BermudaAdvert(dict):
         # Log the calculated distance for tracked devices from Living room light switch 2
         if self._device.create_sensor and self.scanner_device.name == "Living room light switch 2":
             _LOGGER.debug(
-                "bermuda_distance_calc: Calculated distance=%.2fm for %s from %s",
+                "Calculated distance=%.2fm for %s from %s",
                 distance,
                 self._device.name,
                 self.scanner_device.name,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import voluptuous as vol
@@ -12,8 +13,9 @@ from homeassistant.helpers.selector import (
     ObjectSelector,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 from .const import (
-    _LOGGER,
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_MAX_RADIUS,
@@ -72,7 +74,7 @@ class BermudaCalibrationScannerFlowMixin:
                     # Track that this scanner was in the submitted form
                     modified_scanners.add(scanner_address)
 
-                    _LOGGER.debug("bermuda_distance_calc: Processing scanner '%s' address=%s",
+                    _LOGGER.debug("Processing scanner '%s' address=%s",
                                   scanner_name, scanner_address)
 
                     # RSSI Offset - clip to sensible range, fixes #497
@@ -83,12 +85,12 @@ class BermudaCalibrationScannerFlowMixin:
                     atten_val = scanner_data.get("attenuation", global_attenuation)
                     if atten_val != global_attenuation:
                         saved_attenuations[scanner_address] = max(min(float(atten_val), 10.0), 1.0)
-                        _LOGGER.debug("bermuda_distance_calc: Saved attenuation=%s for %s (global=%s)",
+                        _LOGGER.debug("Saved attenuation=%s for %s (global=%s)",
                                       saved_attenuations[scanner_address], scanner_address, global_attenuation)
                     elif scanner_address in saved_attenuations:
                         # Value matches global default, remove override
                         del saved_attenuations[scanner_address]
-                        _LOGGER.debug("bermuda_distance_calc: Removed attenuation override for %s (matches global)",
+                        _LOGGER.debug("Removed attenuation override for %s (matches global)",
                                       scanner_address)
 
                     # Max Radius - store if different from global default
@@ -111,8 +113,8 @@ class BermudaCalibrationScannerFlowMixin:
 
             # Update coordinator's options and reload advert configs for immediate effect
             # Only reload adverts for the scanners that were actually modified (more efficient)
-            _LOGGER.debug("bermuda_distance_calc: About to reload configs for scanners: %s", modified_scanners)
-            _LOGGER.debug("bermuda_distance_calc: Updated options - CONF_SCANNER_ATTENUATION: %s",
+            _LOGGER.debug("About to reload configs for scanners: %s", modified_scanners)
+            _LOGGER.debug("Updated options - CONF_SCANNER_ATTENUATION: %s",
                           self.options.get(CONF_SCANNER_ATTENUATION))
             self.coordinator.options.update(self.options)
             self.coordinator.reload_advert_configs(scanner_addresses=modified_scanners)
@@ -169,7 +171,7 @@ class BermudaCalibrationScannerFlowMixin:
 
         # If a device is selected, filter to nearest scanner and show calibration info
         if selected_device is not None:
-            _LOGGER.debug("bermuda_scanner_filtering: Device selected for calibration: %s (address: %s)",
+            _LOGGER.debug("Device selected for calibration: %s (address: %s)",
                          selected_device.name, selected_device.address)
             try:
                 from homeassistant.helpers import entity_registry as er
@@ -194,7 +196,7 @@ class BermudaCalibrationScannerFlowMixin:
                         elif entity.original_name == "Nearest RSSI":
                             rssi = state.state
 
-                _LOGGER.debug("bermuda_scanner_filtering: Entity states - scanner=%s, distance=%s, rssi=%s",
+                _LOGGER.debug("Entity states - scanner=%s, distance=%s, rssi=%s",
                               nearest_scanner_name, distance, rssi)
 
                 if nearest_scanner_name and nearest_scanner_name != "unavailable":
@@ -222,25 +224,25 @@ class BermudaCalibrationScannerFlowMixin:
                             break
 
                     if nearest_scanner_address:
-                        _LOGGER.debug("bermuda_scanner_filtering: Found scanner address %s for name %s",
+                        _LOGGER.debug("Found scanner address %s for name %s",
                                       nearest_scanner_address, nearest_scanner_name)
                         # Filter to show only the nearest scanner's settings
                         scanners_to_show = [nearest_scanner_address]
                     else:
-                        _LOGGER.warning("bermuda_scanner_filtering: Could not find scanner address for name '%s'",
+                        _LOGGER.warning("Could not find scanner address for name '%s'",
                                        nearest_scanner_name)
                 else:
-                    _LOGGER.debug("bermuda_scanner_filtering: No nearest scanner from entity states")
+                    _LOGGER.debug("No nearest scanner from entity states")
                     description += "---\n\n⚠️ Device not currently detected by any scanner\n\n"
 
             except Exception as e:
-                _LOGGER.warning("bermuda_scanner_filtering: Error loading calibration info: %s", e, exc_info=True)
+                _LOGGER.warning("Error loading calibration info: %s", e, exc_info=True)
                 description += f"⚠️ Could not load calibration info: {e}\n\n"
         else:
-            _LOGGER.debug("bermuda_scanner_filtering: No device selected for calibration (last_device: %s)",
+            _LOGGER.debug("No device selected for calibration (last_device: %s)",
                          self._last_device)
 
-        _LOGGER.debug("bermuda_scanner_filtering: Final description length: %d characters, scanners_to_show: %s",
+        _LOGGER.debug("Final description length: %d characters, scanners_to_show: %s",
                       len(description), scanners_to_show)
 
         # Build nested dict for scanners to display (after filtering to nearest scanner if applicable)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
+
+_LOGGER = logging.getLogger(__name__)
 import voluptuous as vol
 import yaml
 from bluetooth_data_tools import monotonic_time_coarse
@@ -55,7 +58,6 @@ from homeassistant.util.dt import get_age, now
 from .bermuda_device import BermudaDevice
 from .bermuda_irk import BermudaIrkManager
 from .const import (
-    _LOGGER,
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     AREA_MAX_AD_AGE,
@@ -355,13 +357,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
             if scanner_addresses:
                 _LOGGER.debug(
-                    "bermuda_distance_calc: Reloaded config for %d adverts across %d scanner(s): %s",
+                    "Reloaded config for %d adverts across %d scanner(s): %s",
                     reload_count,
                     len(scanner_addresses),
                     scanner_addresses,
                 )
             else:
-                _LOGGER.debug("bermuda_distance_calc: Reloaded config for all %d adverts", reload_count)
+                _LOGGER.debug("Reloaded config for all %d adverts", reload_count)
             return True
         finally:
             self.config_reload_in_progress = False
