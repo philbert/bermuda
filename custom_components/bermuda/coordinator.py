@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,6 +14,9 @@ import aiofiles
 from .const import get_logger
 
 _LOGGER = get_logger(__package__)
+# Separate logger for DataUpdateCoordinator's internal messages
+# This prevents HA core's "Finished fetching..." messages from appearing under custom_components.bermuda
+_COORDINATOR_LOGGER = logging.getLogger(f"{__package__}.coordinator_base")
 import voluptuous as vol
 import yaml
 from bluetooth_data_tools import monotonic_time_coarse
@@ -177,7 +181,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         super().__init__(
             hass,
-            _LOGGER,
+            _COORDINATOR_LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
