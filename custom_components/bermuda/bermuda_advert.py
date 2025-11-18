@@ -362,34 +362,32 @@ class BermudaAdvert(dict):
         # Use filtered RSSI if available, otherwise fall back to raw RSSI
         rssi_for_distance = self.filtered_rssi if self.filtered_rssi is not None else self.rssi
 
-        # Debug logging for distance calculation - only for devices with create_sensor=True
-        if self._device.create_sensor and self.scanner_device.name == "Living room light switch 2":
-            adjusted_rssi = rssi_for_distance + self.conf_rssi_offset
-            _LOGGER.debug(
-                "Device=%s, Scanner=%s, "
-                "raw_rssi=%s, filtered_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
-                "ref_power=%s, attenuation=%s",
-                self._device.name,
-                self.scanner_device.name,
-                self.rssi,
-                self.filtered_rssi,
-                self.conf_rssi_offset,
-                adjusted_rssi,
-                ref_power,
-                self.conf_attenuation,
-            )
+        # Debug logging for distance calculation
+        adjusted_rssi = rssi_for_distance + self.conf_rssi_offset
+        _LOGGER.debug(
+            "Device=%s, Scanner=%s, "
+            "raw_rssi=%s, filtered_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
+            "ref_power=%s, attenuation=%s",
+            self._device.name,
+            self.scanner_device.name,
+            self.rssi,
+            self.filtered_rssi,
+            self.conf_rssi_offset,
+            adjusted_rssi,
+            ref_power,
+            self.conf_attenuation,
+        )
 
         distance = rssi_to_metres(rssi_for_distance + self.conf_rssi_offset, ref_power, self.conf_attenuation)
         self.rssi_distance_raw = distance
 
-        # Log the calculated distance for tracked devices from Living room light switch 2
-        if self._device.create_sensor and self.scanner_device.name == "Living room light switch 2":
-            _LOGGER.debug(
-                "Calculated distance=%.2fm for %s from %s",
-                distance,
-                self._device.name,
-                self.scanner_device.name,
-            )
+        # Log the calculated distance
+        _LOGGER.debug(
+            "Calculated distance=%.2fm for %s from %s",
+            distance,
+            self._device.name,
+            self.scanner_device.name,
+        )
         if reading_is_new:
             # Add a new historical reading
             self.hist_distance.insert(0, distance)
