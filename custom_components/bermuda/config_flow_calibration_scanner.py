@@ -51,89 +51,89 @@ class BermudaCalibrationScannerFlowMixin:
             _LOGGER.debug("User input received: %s", user_input.keys())
             _LOGGER.debug("Device in user_input: %s", user_input.get(CONF_DEVICES))
 
-            # Always save on submit - merge submitted values with existing saved values
-            # Load existing saved values
-            saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
-            saved_attenuations = self.options.get(CONF_SCANNER_ATTENUATION, {})
-            saved_max_radii = self.options.get(CONF_SCANNER_MAX_RADIUS, {})
-
-            # Get global defaults for fallback
-            global_attenuation = self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
-            global_max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
-
-            # Track which scanners had their config modified for targeted reload
-            modified_scanners = set()
-
-            # Process the submitted scanner info (may be filtered to just one scanner)
-            for scanner_name, scanner_data in user_input[CONF_SCANNER_INFO].items():
-                # Find the scanner address from the name
-                scanner_address = None
-                for address in self.coordinator.scanner_list:
-                    if self.coordinator.devices[address].name == scanner_name:
-                        scanner_address = address
-                        break
-
-                if scanner_address:
-                    # Track that this scanner was in the submitted form
-                    modified_scanners.add(scanner_address)
-
-                    _LOGGER.debug("Processing scanner '%s' address=%s",
-                                  scanner_name, scanner_address)
-
-                    # RSSI Offset - clip to sensible range, fixes #497
-                    rssi_val = scanner_data.get("rssi_offset", 0)
-                    saved_rssi_offsets[scanner_address] = max(min(rssi_val, 127), -127)
-
-                    # Attenuation - store if different from global default
-                    atten_val = scanner_data.get("attenuation", global_attenuation)
-                    if atten_val != global_attenuation:
-                        saved_attenuations[scanner_address] = max(min(float(atten_val), 10.0), 1.0)
-                        _LOGGER.debug("Saved attenuation=%s for %s (global=%s)",
-                                      saved_attenuations[scanner_address], scanner_address, global_attenuation)
-                    elif scanner_address in saved_attenuations:
-                        # Value matches global default, remove override
-                        del saved_attenuations[scanner_address]
-                        _LOGGER.debug("Removed attenuation override for %s (matches global)",
-                                      scanner_address)
-
-                    # Max Radius - store if different from global default
-                    radius_val = scanner_data.get("max_radius", global_max_radius)
-                    if radius_val != global_max_radius:
-                        saved_max_radii[scanner_address] = max(min(float(radius_val), 100.0), 1.0)
-                    elif scanner_address in saved_max_radii:
-                        # Value matches global default, remove override
-                        del saved_max_radii[scanner_address]
-
-            # Save the merged values
-            self.options.update({
-                CONF_RSSI_OFFSETS: saved_rssi_offsets,
-                CONF_SCANNER_ATTENUATION: saved_attenuations,
-                CONF_SCANNER_MAX_RADIUS: saved_max_radii,
-            })
-
-            # Save without closing - update the config entry
-            self.hass.config_entries.async_update_entry(self.config_entry, options=self.options)
-
-            # Update coordinator's options and reload advert configs for immediate effect
-            # Only reload adverts for the scanners that were actually modified (more efficient)
-            _LOGGER.debug("About to reload configs for scanners: %s", modified_scanners)
-            _LOGGER.debug("Updated options - CONF_SCANNER_ATTENUATION: %s",
-                          self.options.get(CONF_SCANNER_ATTENUATION))
-            self.coordinator.options.update(self.options)
-            self.coordinator.reload_advert_configs(scanner_addresses=modified_scanners)
-
-            # Update state and refresh display
+            # Check if device selection changed - if so, just refresh the form
             new_device = user_input.get(CONF_DEVICES)
-
-            # If a device is selected, always clear scanner info so we rebuild based on
-            # the CURRENT nearest scanner (which may have changed)
-            if new_device:
-                self._last_scanner_info = None
+            if new_device != self._last_device:
+                _LOGGER.debug("Device selection changed from %s to %s, refreshing form",
+                             self._last_device, new_device)
+                self._last_device = new_device
+                self._last_scanner_info = None  # Clear scanner info to rebuild
+                # Don't process scanner data, just re-render with new device
+                # Fall through to the form rendering below
             else:
-                # No device selected - keep user's edits to all scanners
-                self._last_scanner_info = user_input[CONF_SCANNER_INFO]
+                # Device didn't change, so this is a real submit - save the scanner config
+                # Load existing saved values
+                saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
+                saved_attenuations = self.options.get(CONF_SCANNER_ATTENUATION, {})
+                saved_max_radii = self.options.get(CONF_SCANNER_MAX_RADIUS, {})
 
-            self._last_device = new_device
+                # Get global defaults for fallback
+                global_attenuation = self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+                global_max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+                # Track which scanners had their config modified for targeted reload
+                modified_scanners = set()
+
+                # Process the submitted scanner info (may be filtered to just one scanner)
+                for scanner_name, scanner_data in user_input[CONF_SCANNER_INFO].items():
+                    # Find the scanner address from the name
+                    scanner_address = None
+                    for address in self.coordinator.scanner_list:
+                        if self.coordinator.devices[address].name == scanner_name:
+                            scanner_address = address
+                            break
+
+                    if scanner_address:
+                        # Track that this scanner was in the submitted form
+                        modified_scanners.add(scanner_address)
+
+                        _LOGGER.debug("Processing scanner '%s' address=%s",
+                                      scanner_name, scanner_address)
+
+                        # RSSI Offset - clip to sensible range, fixes #497
+                        rssi_val = scanner_data.get("rssi_offset", 0)
+                        saved_rssi_offsets[scanner_address] = max(min(rssi_val, 127), -127)
+
+                        # Attenuation - store if different from global default
+                        atten_val = scanner_data.get("attenuation", global_attenuation)
+                        if atten_val != global_attenuation:
+                            saved_attenuations[scanner_address] = max(min(float(atten_val), 10.0), 1.0)
+                            _LOGGER.debug("Saved attenuation=%s for %s (global=%s)",
+                                          saved_attenuations[scanner_address], scanner_address, global_attenuation)
+                        elif scanner_address in saved_attenuations:
+                            # Value matches global default, remove override
+                            del saved_attenuations[scanner_address]
+                            _LOGGER.debug("Removed attenuation override for %s (matches global)",
+                                          scanner_address)
+
+                        # Max Radius - store if different from global default
+                        radius_val = scanner_data.get("max_radius", global_max_radius)
+                        if radius_val != global_max_radius:
+                            saved_max_radii[scanner_address] = max(min(float(radius_val), 100.0), 1.0)
+                        elif scanner_address in saved_max_radii:
+                            # Value matches global default, remove override
+                            del saved_max_radii[scanner_address]
+
+                # Save the merged values
+                self.options.update({
+                    CONF_RSSI_OFFSETS: saved_rssi_offsets,
+                    CONF_SCANNER_ATTENUATION: saved_attenuations,
+                    CONF_SCANNER_MAX_RADIUS: saved_max_radii,
+                })
+
+                # Save without closing - update the config entry
+                self.hass.config_entries.async_update_entry(self.config_entry, options=self.options)
+
+                # Update coordinator's options and reload advert configs for immediate effect
+                # Only reload adverts for the scanners that were actually modified (more efficient)
+                _LOGGER.debug("About to reload configs for scanners: %s", modified_scanners)
+                _LOGGER.debug("Updated options - CONF_SCANNER_ATTENUATION: %s",
+                              self.options.get(CONF_SCANNER_ATTENUATION))
+                self.coordinator.options.update(self.options)
+                self.coordinator.reload_advert_configs(scanner_addresses=modified_scanners)
+
+                # Keep scanner info for next render if device didn't change
+                self._last_scanner_info = user_input[CONF_SCANNER_INFO]
 
         # Load saved values and global defaults
         saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
@@ -283,11 +283,8 @@ class BermudaCalibrationScannerFlowMixin:
             ): ObjectSelector(),
         })
 
-        # Return with last_step=False to indicate more config may be needed
-        # This encourages the UI to auto-refresh when device selection changes
         return self.async_show_form(
             step_id="calibration2_scanners",
             data_schema=data_schema,
             description_placeholders=_ugly_token_hack | {"suffix": description},
-            last_step=False,
         )
