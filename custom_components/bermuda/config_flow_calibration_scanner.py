@@ -272,7 +272,7 @@ class BermudaCalibrationScannerFlowMixin:
             default_scanner_info = scanner_config_dict
 
         # Using suggested_value allows the device to be cleared but shows last selection
-        data_schema = vol.Schema({
+        data_schema = {
             vol.Optional(
                 CONF_DEVICES,
                 description={"suggested_value": self._last_device},
@@ -281,10 +281,10 @@ class BermudaCalibrationScannerFlowMixin:
                 CONF_SCANNER_INFO,
                 default=default_scanner_info,
             ): ObjectSelector(),
-        })
+        }
 
         return self.async_show_form(
             step_id="calibration2_scanners",
-            data_schema=data_schema,
+            data_schema=vol.Schema(data_schema),
             description_placeholders=_ugly_token_hack | {"suffix": description},
         )
