@@ -14,6 +14,7 @@ to the combination of the scanner and the device it is reporting.
 
 from __future__ import annotations
 
+import statistics
 from typing import TYPE_CHECKING, Final
 
 from bluetooth_data_tools import monotonic_time_coarse
@@ -24,10 +25,14 @@ from .const import (
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
+    CONF_RSSI_EMA_ALPHA,
+    CONF_RSSI_MEDIAN_WINDOW,
     CONF_RSSI_OFFSETS,
     CONF_SCANNER_ATTENUATION,
     CONF_SCANNER_MAX_RADIUS,
     CONF_SMOOTHING_SAMPLES,
+    DEFAULT_RSSI_EMA_ALPHA,
+    DEFAULT_RSSI_MEDIAN_WINDOW,
     DISTANCE_INFINITE,
     DISTANCE_TIMEOUT,
     HIST_KEEP_COUNT,
@@ -89,6 +94,7 @@ class BermudaAdvert(dict):
         self.stamp: float = 0
         self.new_stamp: float | None = None  # Set when a new advert is loaded from update
         self.rssi: float | None = None
+        self.filtered_rssi: float | None = None  # RSSI after median + EMA filtering
         self.tx_power: float | None = None
         self.rssi_distance: float | None = None
         self.rssi_distance_raw: float
@@ -119,6 +125,8 @@ class BermudaAdvert(dict):
 
         self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
+        self.conf_rssi_median_window = self.options.get(CONF_RSSI_MEDIAN_WINDOW, DEFAULT_RSSI_MEDIAN_WINDOW)
+        self.conf_rssi_ema_alpha = self.options.get(CONF_RSSI_EMA_ALPHA, DEFAULT_RSSI_EMA_ALPHA)
         self.local_name: list[tuple[str, bytes]] = []
         self.manufacturer_data: list[dict[int, bytes]] = []
         self.service_data: list[dict[str, bytes]] = []
@@ -154,6 +162,8 @@ class BermudaAdvert(dict):
 
         self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
+        self.conf_rssi_median_window = self.options.get(CONF_RSSI_MEDIAN_WINDOW, DEFAULT_RSSI_MEDIAN_WINDOW)
+        self.conf_rssi_ema_alpha = self.options.get(CONF_RSSI_EMA_ALPHA, DEFAULT_RSSI_EMA_ALPHA)
 
         # Recalculate distance with new settings if we have a current reading
         if self.rssi is not None:
@@ -234,6 +244,23 @@ class BermudaAdvert(dict):
 
             self.rssi = advertisementdata.rssi
             self.hist_rssi.insert(0, self.rssi)
+
+            # Apply median + EMA filtering to RSSI
+            if len(self.hist_rssi) >= self.conf_rssi_median_window:
+                # Calculate median of recent RSSI samples
+                median_rssi = statistics.median(self.hist_rssi[:self.conf_rssi_median_window])
+
+                # Apply Exponential Moving Average
+                if self.filtered_rssi is None:
+                    # First time - initialize with median
+                    self.filtered_rssi = median_rssi
+                else:
+                    # Apply EMA: new_value = alpha * new_sample + (1-alpha) * old_value
+                    self.filtered_rssi = (self.conf_rssi_ema_alpha * median_rssi) + \
+                                        ((1 - self.conf_rssi_ema_alpha) * self.filtered_rssi)
+            else:
+                # Not enough samples yet - use raw RSSI
+                self.filtered_rssi = self.rssi
 
             self._update_raw_distance(reading_is_new=True)
 
@@ -332,23 +359,27 @@ class BermudaAdvert(dict):
         else:
             ref_power = self.ref_power
 
+        # Use filtered RSSI if available, otherwise fall back to raw RSSI
+        rssi_for_distance = self.filtered_rssi if self.filtered_rssi is not None else self.rssi
+
         # Debug logging for distance calculation - only for devices with create_sensor=True
         if self._device.create_sensor and self.scanner_device.name == "Living room light switch 2":
-            adjusted_rssi = self.rssi + self.conf_rssi_offset
+            adjusted_rssi = rssi_for_distance + self.conf_rssi_offset
             _LOGGER.debug(
                 "Device=%s, Scanner=%s, "
-                "raw_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
+                "raw_rssi=%s, filtered_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
                 "ref_power=%s, attenuation=%s",
                 self._device.name,
                 self.scanner_device.name,
                 self.rssi,
+                self.filtered_rssi,
                 self.conf_rssi_offset,
                 adjusted_rssi,
                 ref_power,
                 self.conf_attenuation,
             )
 
-        distance = rssi_to_metres(self.rssi + self.conf_rssi_offset, ref_power, self.conf_attenuation)
+        distance = rssi_to_metres(rssi_for_distance + self.conf_rssi_offset, ref_power, self.conf_attenuation)
         self.rssi_distance_raw = distance
 
         # Log the calculated distance for tracked devices from Living room light switch 2

@@ -2,6 +2,19 @@ Device Movement and Room Allocation Improvement Plan
 
 This document describes a proposed set of enhancements for improving BLE-based indoor positioning accuracy in Bermuda (and similar ESPresense-like systems). The focus is on three layers: RSSI filtering, distance stabilization, and improved room attribution using explicit motion detection and hysteresis.
 
+## Implementation Status
+
+✅ **Phase 1 Complete**: RSSI Median + EMA filtering implemented (Section 2.1)
+- Implemented in `bermuda_advert.py` with configurable parameters
+- Default: 5-sample median window with 0.3 EMA alpha
+- Filtering applied before distance calculation
+- Configuration parameters: `rssi_median_window` and `rssi_ema_alpha`
+
+🔲 **Pending**: Outlier handling (Section 2.2)
+🔲 **Pending**: Distance estimation improvements (Section 3)
+🔲 **Pending**: Movement detection (Section 4)
+🔲 **Pending**: Room attribution improvements (Section 5)
+
 ⸻
 
 1. Overview
@@ -18,13 +31,24 @@ This layered approach yields significantly more stable room attribution without 
 
 2. RSSI Filtering Enhancements
 
-2.1 Sliding Median + EMA
+2.1 Sliding Median + EMA ✅ IMPLEMENTED
 
 Maintain a small time-based buffer of recent RSSI samples per device and scanner. Compute:
 	•	Median of the buffer to remove spikes.
 	•	Exponential moving average (EMA) over the median to smooth remaining variation.
 
 This reduces jitter before converting RSSI to distance.
+
+**Implementation Details:**
+- Located in `BermudaAdvert.update_advertisement()` method (bermuda_advert.py:248-263)
+- Uses `statistics.median()` on the last N samples from `hist_rssi`
+- EMA formula: `filtered = alpha × median + (1-alpha) × previous_filtered`
+- New attribute: `BermudaAdvert.filtered_rssi` stores the filtered value
+- Distance calculation in `_update_raw_distance()` now uses filtered RSSI
+- Configuration:
+  - `rssi_median_window`: Number of samples (default: 5)
+  - `rssi_ema_alpha`: Smoothing factor 0.0-1.0 (default: 0.3)
+- Graceful fallback to raw RSSI when insufficient samples available
 
 2.2 Outlier Handling
 

@@ -259,6 +259,19 @@ DOCS[CONF_SMOOTHING_SAMPLES] = (
     " make for slower distance increases. 10 or 20 seems good."
 )
 
+# RSSI Filtering parameters
+CONF_RSSI_MEDIAN_WINDOW, DEFAULT_RSSI_MEDIAN_WINDOW = "rssi_median_window", 5
+DOCS[CONF_RSSI_MEDIAN_WINDOW] = (
+    "Number of recent RSSI samples to use for median filtering.",
+    "Larger values provide more smoothing but slower response. 5-10 is typical.",
+)
+
+CONF_RSSI_EMA_ALPHA, DEFAULT_RSSI_EMA_ALPHA = "rssi_ema_alpha", 0.3
+DOCS[CONF_RSSI_EMA_ALPHA] = (
+    "Exponential Moving Average smoothing factor (0.0-1.0).",
+    "Lower values = more smoothing. 0.3 provides good balance.",
+)
+
 # Defaults
 DEFAULT_NAME = DOMAIN
 
