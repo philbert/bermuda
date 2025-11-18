@@ -630,6 +630,19 @@ class BermudaDevice(dict):
                     or metadevice.name_bt_serviceinfo
                     or metadevice.name
                 )
+            else:
+                _LOGGER.debug(
+                    "MAC %s resolves to IRK %s... but no metadevice found",
+                    self.address,
+                    irk_hex[:8]
+                )
+        elif self.name.startswith("apple_inc_"):
+            # Debug: Apple device that isn't resolved yet
+            _LOGGER.debug(
+                "Apple MAC %s not resolved by IRK manager (irk=%s)",
+                self.address,
+                irk
+            )
 
         # Not a metadevice source, return our own friendly name
         return (
