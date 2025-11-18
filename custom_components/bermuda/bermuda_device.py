@@ -608,6 +608,12 @@ class BermudaDevice(dict):
         for metadevice in self._coordinator.metadevices.values():
             if self.address in metadevice.metadevice_sources:
                 # Return the metadevice's friendly name
+                _LOGGER.debug(
+                    "Found metadevice for %s: %s (sources: %s)",
+                    self.address,
+                    metadevice.name,
+                    metadevice.metadevice_sources[:3],  # Show first 3 sources
+                )
                 return (
                     metadevice.name_by_user
                     or metadevice.name_devreg
