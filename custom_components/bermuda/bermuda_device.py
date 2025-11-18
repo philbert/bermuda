@@ -604,16 +604,25 @@ class BermudaDevice(dict):
         return the metadevice's friendly name instead. Otherwise return this
         device's own friendly name.
         """
-        # Check if this device is a source for a metadevice
+        # First check if this device is currently tracked in a metadevice's sources
         for metadevice in self._coordinator.metadevices.values():
             if self.address in metadevice.metadevice_sources:
                 # Return the metadevice's friendly name
-                _LOGGER.debug(
-                    "Found metadevice for %s: %s (sources: %s)",
-                    self.address,
-                    metadevice.name,
-                    metadevice.metadevice_sources[:3],  # Show first 3 sources
+                return (
+                    metadevice.name_by_user
+                    or metadevice.name_devreg
+                    or metadevice.name_bt_local_name
+                    or metadevice.name_bt_serviceinfo
+                    or metadevice.name
                 )
+
+        # For Private BLE rotating MACs, use IRK manager to find the parent device
+        irk = self._coordinator.irk_manager.check_mac(self.address)
+        if irk and irk not in [b"NOTIRK", b"UNKNOWN"]:  # IrkTypes.unresolved()
+            # This MAC resolves to an IRK - look up the metadevice by IRK
+            irk_hex = irk.hex()
+            if irk_hex in self._coordinator.metadevices:
+                metadevice = self._coordinator.metadevices[irk_hex]
                 return (
                     metadevice.name_by_user
                     or metadevice.name_devreg
