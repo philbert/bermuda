@@ -595,6 +595,36 @@ class BermudaDevice(dict):
 
         return self.name
 
+    @property
+    def friendly_name(self) -> str:
+        """
+        Get the most user-friendly name for this device.
+
+        If this device is a source for a metadevice (Private BLE or iBeacon),
+        return the metadevice's friendly name instead. Otherwise return this
+        device's own friendly name.
+        """
+        # Check if this device is a source for a metadevice
+        for metadevice in self._coordinator.metadevices.values():
+            if self.address in metadevice.metadevice_sources:
+                # Return the metadevice's friendly name
+                return (
+                    metadevice.name_by_user
+                    or metadevice.name_devreg
+                    or metadevice.name_bt_local_name
+                    or metadevice.name_bt_serviceinfo
+                    or metadevice.name
+                )
+
+        # Not a metadevice source, return our own friendly name
+        return (
+            self.name_by_user
+            or self.name_devreg
+            or self.name_bt_local_name
+            or self.name_bt_serviceinfo
+            or self.name
+        )
+
     def set_ref_power(self, new_ref_power: float):
         """
         Set a new reference power for this device and immediately apply

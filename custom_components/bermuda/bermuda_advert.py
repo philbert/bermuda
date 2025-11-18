@@ -362,27 +362,14 @@ class BermudaAdvert(dict):
         # Use filtered RSSI if available, otherwise fall back to raw RSSI
         rssi_for_distance = self.filtered_rssi if self.filtered_rssi is not None else self.rssi
 
-        # Get the best available friendly name for debug logging
-        device_name = (
-            self._device.name_by_user
-            or self._device.name_devreg
-            or self._device.name_bt_local_name
-            or self._device.name
-        )
-        scanner_name = (
-            self.scanner_device.name_by_user
-            or self.scanner_device.name_devreg
-            or self.scanner_device.name
-        )
-
         # Debug logging for distance calculation
         adjusted_rssi = rssi_for_distance + self.conf_rssi_offset
         _LOGGER.debug(
             "Device=%s, Scanner=%s, "
             "raw_rssi=%s, filtered_rssi=%s, rssi_offset=%s, adjusted_rssi=%s, "
             "ref_power=%s, attenuation=%s",
-            device_name,
-            scanner_name,
+            self._device.friendly_name,
+            self.scanner_device.friendly_name,
             self.rssi,
             self.filtered_rssi,
             self.conf_rssi_offset,
@@ -398,8 +385,8 @@ class BermudaAdvert(dict):
         _LOGGER.debug(
             "Calculated distance=%.2fm for %s from %s",
             distance,
-            device_name,
-            scanner_name,
+            self._device.friendly_name,
+            self.scanner_device.friendly_name,
         )
         if reading_is_new:
             # Add a new historical reading
