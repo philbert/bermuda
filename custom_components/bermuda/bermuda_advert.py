@@ -76,6 +76,7 @@ class BermudaAdvert(dict):
         self.scanner_address: Final[str] = scanner_device.address
         self.device_address: Final[str] = parent_device.address
         self._device = parent_device
+        self._coordinator = parent_device._coordinator  # Access to coordinator for per-scanner config
         self.ref_power: float = self._device.ref_power  # Take from parent at first, might be changed by metadevice l8r
         self.apply_new_scanner(scanner_device)
 
@@ -94,9 +95,11 @@ class BermudaAdvert(dict):
         self.hist_distance_by_interval: list[float] = []  # updated per-interval
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
-        self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
+        # Load per-scanner configuration using coordinator helpers
+        self.conf_rssi_offset = self._coordinator.get_scanner_rssi_offset(self.scanner_address)
+        self.conf_attenuation = self._coordinator.get_scanner_attenuation(self.scanner_address)
+        # Global configs (not per-scanner)
         self.conf_ref_power = self.options.get(CONF_REF_POWER)
-        self.conf_attenuation = self.options.get(CONF_ATTENUATION)
         self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
         self.local_name: list[tuple[str, bytes]] = []
@@ -116,6 +119,15 @@ class BermudaAdvert(dict):
         self.area_name: str | None = scanner_device.area_name
         # Only remote scanners log timestamps, local usb adaptors do not.
         self.scanner_sends_stamps = scanner_device.is_remote_scanner
+
+    def reload_config(self) -> None:
+        """
+        Reload per-scanner configuration from coordinator.
+
+        Called when scanner Number entity values change to pick up new settings.
+        """
+        self.conf_rssi_offset = self._coordinator.get_scanner_rssi_offset(self.scanner_address)
+        self.conf_attenuation = self._coordinator.get_scanner_attenuation(self.scanner_address)
 
     def update_advertisement(self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice):
         """

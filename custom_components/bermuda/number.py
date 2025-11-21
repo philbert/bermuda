@@ -14,7 +14,7 @@ from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT, EntityCatego
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import SIGNAL_DEVICE_NEW
+from .const import SIGNAL_DEVICE_NEW, SIGNAL_SCANNERS_CHANGED
 from .entity import BermudaEntity
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ async def async_setup_entry(
     coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
 
     created_devices = []  # list of devices we've already created entities for
+    created_scanner_entities = []  # list of scanner addresses we've created config entities for
 
     @callback
     def device_new(address: str) -> None:
@@ -59,8 +60,26 @@ async def async_setup_entry(
         # tell the co-ord we've done it.
         coordinator.number_created(address)
 
+    @callback
+    def scanners_changed() -> None:
+        """Create per-scanner configuration Number entities."""
+        entities = []
+        for address, device in coordinator.devices.items():
+            if device.is_scanner and address not in created_scanner_entities:
+                # Create all three config entities for this scanner
+                entities.append(BermudaScannerRSSIOffset(coordinator, entry, address))
+                entities.append(BermudaScannerAttenuation(coordinator, entry, address))
+                entities.append(BermudaScannerMaxRadius(coordinator, entry, address))
+                created_scanner_entities.append(address)
+
+        if entities:
+            async_add_devices(entities, False)
+
     # Connect device_new to a signal so the coordinator can call it
     entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_DEVICE_NEW, device_new))
+
+    # Connect scanners_changed to handle new scanners
+    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_SCANNERS_CHANGED, scanners_changed))
 
     # Now we must tell the co-ord to do initial refresh, so that it will call our callback.
     # await coordinator.async_config_entry_first_refresh()
@@ -144,3 +163,254 @@ class BermudaNumber(BermudaEntity, RestoreNumber):
     # def icon(self) -> str:
     #     """Return device icon."""
     #     return "mdi:bluetooth-connect" if self._device.zone == STATE_HOME else "mdi:bluetooth-off"
+
+
+class BermudaScannerRSSIOffset(BermudaEntity, RestoreNumber):
+    """RSSI Offset configuration for a scanner device."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "RSSI Offset"
+    _attr_translation_key = "scanner_rssi_offset"
+    _attr_device_class = NumberDeviceClass.SIGNAL_STRENGTH
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = -127
+    _attr_native_max_value = 127
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self,
+        coordinator: BermudaDataUpdateCoordinator,
+        entry: BermudaConfigEntry,
+        address: str,
+    ) -> None:
+        """Initialise the scanner RSSI offset entity."""
+        self.restored_data: NumberExtraStoredData | None = None
+        self._migrated_value: float | None = None
+        super().__init__(coordinator, entry, address)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore values from HA storage on startup and migrate legacy config."""
+        await super().async_added_to_hass()
+        self.restored_data = await self.async_get_last_number_data()
+
+        # Check for legacy CONF_RSSI_OFFSETS migration
+        from .const import CONF_RSSI_OFFSETS
+        legacy_offsets = self.coordinator.options.get(CONF_RSSI_OFFSETS, {})
+        legacy_value = legacy_offsets.get(self.address)
+
+        # Priority: restored entity state > legacy config > default (0)
+        if self.restored_data is not None and self.restored_data.native_value is not None:
+            # Entity state exists, use it
+            value = self.restored_data.native_value
+        elif legacy_value is not None:
+            # Migrate from legacy config
+            value = legacy_value
+            self._migrated_value = value
+        else:
+            # Default to 0
+            value = 0
+
+        # Store the value in coordinator's device
+        if hasattr(self.coordinator.devices[self.address], 'rssi_offset'):
+            self.coordinator.devices[self.address].rssi_offset = value
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator for bidirectional sync."""
+        # Check if config flow changed the legacy RSSI offset
+        from .const import CONF_RSSI_OFFSETS
+        legacy_offsets = self.coordinator.options.get(CONF_RSSI_OFFSETS, {})
+        config_value = legacy_offsets.get(self.address)
+
+        if config_value is not None and config_value != self.native_value:
+            # Config flow updated, sync to entity
+            if hasattr(self.coordinator.devices[self.address], 'rssi_offset'):
+                self.coordinator.devices[self.address].rssi_offset = config_value
+            self.async_write_ha_state()
+
+        super()._handle_coordinator_update()
+
+    @property
+    def native_value(self) -> float | None:
+        """Return value of number."""
+        # Check device storage first
+        if hasattr(self.coordinator.devices[self.address], 'rssi_offset'):
+            return self.coordinator.devices[self.address].rssi_offset
+
+        # Fall back to legacy config if available
+        from .const import CONF_RSSI_OFFSETS
+        legacy_offsets = self.coordinator.options.get(CONF_RSSI_OFFSETS, {})
+        legacy_value = legacy_offsets.get(self.address)
+        if legacy_value is not None:
+            return legacy_value
+
+        # Default
+        return 0
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set value."""
+        # Store in device
+        if hasattr(self.coordinator.devices[self.address], 'rssi_offset'):
+            self.coordinator.devices[self.address].rssi_offset = value
+        else:
+            # Create attribute if it doesn't exist
+            self.coordinator.devices[self.address].rssi_offset = value
+
+        self.async_write_ha_state()
+
+        # Trigger reload of all advert configs
+        if hasattr(self.coordinator, 'reload_all_advert_configs'):
+            self.coordinator.reload_all_advert_configs()
+
+    @property
+    def unique_id(self):
+        """Uniquely identify this entity."""
+        return f"{self._device.unique_id}_rssi_offset"
+
+
+class BermudaScannerAttenuation(BermudaEntity, RestoreNumber):
+    """Attenuation configuration for a scanner device."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Attenuation"
+    _attr_translation_key = "scanner_attenuation"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 10
+    _attr_native_step = 0.1
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self,
+        coordinator: BermudaDataUpdateCoordinator,
+        entry: BermudaConfigEntry,
+        address: str,
+    ) -> None:
+        """Initialise the scanner attenuation entity."""
+        self.restored_data: NumberExtraStoredData | None = None
+        super().__init__(coordinator, entry, address)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore values from HA storage on startup."""
+        await super().async_added_to_hass()
+        self.restored_data = await self.async_get_last_number_data()
+
+        # Get value: restored state > global default
+        from .const import CONF_ATTENUATION, DEFAULT_ATTENUATION
+        if self.restored_data is not None and self.restored_data.native_value is not None:
+            value = self.restored_data.native_value
+        else:
+            value = self.coordinator.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+
+        # Store in device
+        if hasattr(self.coordinator.devices[self.address], 'attenuation'):
+            self.coordinator.devices[self.address].attenuation = value
+        else:
+            self.coordinator.devices[self.address].attenuation = value
+
+    @property
+    def native_value(self) -> float | None:
+        """Return value of number."""
+        # Check device storage first
+        if hasattr(self.coordinator.devices[self.address], 'attenuation'):
+            return self.coordinator.devices[self.address].attenuation
+
+        # Fall back to global default
+        from .const import CONF_ATTENUATION, DEFAULT_ATTENUATION
+        return self.coordinator.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set value."""
+        # Store in device
+        if hasattr(self.coordinator.devices[self.address], 'attenuation'):
+            self.coordinator.devices[self.address].attenuation = value
+        else:
+            self.coordinator.devices[self.address].attenuation = value
+
+        self.async_write_ha_state()
+
+        # Trigger reload of all advert configs
+        if hasattr(self.coordinator, 'reload_all_advert_configs'):
+            self.coordinator.reload_all_advert_configs()
+
+    @property
+    def unique_id(self):
+        """Uniquely identify this entity."""
+        return f"{self._device.unique_id}_attenuation"
+
+
+class BermudaScannerMaxRadius(BermudaEntity, RestoreNumber):
+    """Max Radius configuration for a scanner device."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Max Radius"
+    _attr_translation_key = "scanner_max_radius"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 0.5
+    _attr_native_unit_of_measurement = "m"
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self,
+        coordinator: BermudaDataUpdateCoordinator,
+        entry: BermudaConfigEntry,
+        address: str,
+    ) -> None:
+        """Initialise the scanner max radius entity."""
+        self.restored_data: NumberExtraStoredData | None = None
+        super().__init__(coordinator, entry, address)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore values from HA storage on startup."""
+        await super().async_added_to_hass()
+        self.restored_data = await self.async_get_last_number_data()
+
+        # Get value: restored state > global default
+        from .const import CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS
+        if self.restored_data is not None and self.restored_data.native_value is not None:
+            value = self.restored_data.native_value
+        else:
+            value = self.coordinator.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+        # Store in device
+        if hasattr(self.coordinator.devices[self.address], 'max_radius'):
+            self.coordinator.devices[self.address].max_radius = value
+        else:
+            self.coordinator.devices[self.address].max_radius = value
+
+    @property
+    def native_value(self) -> float | None:
+        """Return value of number."""
+        # Check device storage first
+        if hasattr(self.coordinator.devices[self.address], 'max_radius'):
+            return self.coordinator.devices[self.address].max_radius
+
+        # Fall back to global default
+        from .const import CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS
+        return self.coordinator.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set value."""
+        # Store in device
+        if hasattr(self.coordinator.devices[self.address], 'max_radius'):
+            self.coordinator.devices[self.address].max_radius = value
+        else:
+            self.coordinator.devices[self.address].max_radius = value
+
+        self.async_write_ha_state()
+
+        # Trigger reload of all advert configs
+        if hasattr(self.coordinator, 'reload_all_advert_configs'):
+            self.coordinator.reload_all_advert_configs()
+
+    @property
+    def unique_id(self):
+        """Uniquely identify this entity."""
+        return f"{self._device.unique_id}_max_radius"

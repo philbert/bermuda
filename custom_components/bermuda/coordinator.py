@@ -323,6 +323,69 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self._scanners.remove(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
+    def get_scanner_rssi_offset(self, scanner_address: str) -> float:
+        """
+        Get RSSI offset for a scanner.
+
+        Priority: scanner device attribute > legacy config > default (0)
+        """
+        # Check if scanner device has the attribute
+        if scanner_address in self.devices:
+            device = self.devices[scanner_address]
+            if hasattr(device, 'rssi_offset'):
+                return device.rssi_offset
+
+        # Fall back to legacy config
+        legacy_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
+        if scanner_address in legacy_offsets:
+            return legacy_offsets[scanner_address]
+
+        # Default
+        return 0
+
+    def get_scanner_attenuation(self, scanner_address: str) -> float:
+        """
+        Get attenuation for a scanner.
+
+        Priority: scanner device attribute > global default
+        """
+        # Check if scanner device has the attribute
+        if scanner_address in self.devices:
+            device = self.devices[scanner_address]
+            if hasattr(device, 'attenuation'):
+                return device.attenuation
+
+        # Fall back to global default
+        return self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION)
+
+    def get_scanner_max_radius(self, scanner_address: str) -> float:
+        """
+        Get max radius for a scanner.
+
+        Priority: scanner device attribute > global default
+        """
+        # Check if scanner device has the attribute
+        if scanner_address in self.devices:
+            device = self.devices[scanner_address]
+            if hasattr(device, 'max_radius'):
+                return device.max_radius
+
+        # Fall back to global default
+        return self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+    def reload_all_advert_configs(self) -> None:
+        """
+        Reload configuration for all BermudaAdvert instances.
+
+        Called when a scanner Number entity value changes to ensure
+        all advert instances pick up the new configuration values.
+        """
+        for device in self.devices.values():
+            if hasattr(device, 'scanners'):
+                for scanner_address, advert in device.scanners.items():
+                    if hasattr(advert, 'reload_config'):
+                        advert.reload_config()
+
     def get_manufacturer_from_id(self, uuid: int | str) -> tuple[str, bool] | tuple[None, None]:
         """
         An opinionated Bluetooth UUID to Name mapper.
@@ -1307,7 +1370,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         # The current area_scanner (which might be None) is the one to beat.
         incumbent: BermudaAdvert | None = device.area_advert
 
-        _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
         nowstamp = monotonic_time_coarse()
 
         tests = self.AreaTests()
@@ -1346,8 +1408,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 # our ad is too old.
                 continue
 
+            # Get per-scanner max_radius for this challenger
+            challenger_max_radius = self.get_scanner_max_radius(challenger.scanner_address)
+
             # If we are too far away or don't have an area, we cannot win...
-            if challenger.rssi_distance is None or challenger.rssi_distance > _max_radius or challenger.area_id is None:
+            if challenger.rssi_distance is None or challenger.rssi_distance > challenger_max_radius or challenger.area_id is None:
                 continue
 
             # At this point the challenger is a vaild contender...
@@ -1367,6 +1432,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         "%s IS closesr to %s: Encumbant is invalid",
                         device.name,
                         challenger.name,
+                    )
+                continue
+
+            # Check if incumbent is too far away based on its scanner's max_radius
+            incumbent_max_radius = self.get_scanner_max_radius(incumbent.scanner_address)
+            if incumbent.rssi_distance > incumbent_max_radius:
+                # Incumbent is too far away, challenger wins
+                incumbent = challenger
+                if _superchatty:
+                    _LOGGER.debug(
+                        "%s IS closer to %s: Incumbent %s exceeds max_radius %.1f",
+                        device.name,
+                        challenger.name,
+                        incumbent.name,
+                        incumbent_max_radius,
                     )
                 continue
 
