@@ -200,9 +200,44 @@ class BermudaScannerRSSIOffset(BermudaEntity, RestoreNumber):
         """Restore values from HA storage on startup."""
         await super().async_added_to_hass()
         self.restored_data = await self.async_get_last_number_data()
-        # Trigger reload so BermudaAdvert picks up restored values
-        if self.restored_data is not None and self.restored_data.native_value is not None:
-            self.coordinator.reload_all_advert_configs()
+
+        # If no restored data, check for legacy config and migrate it
+        if self.restored_data is None or self.restored_data.native_value is None:
+            rssi_offsets = self.coordinator.options.get("rssi_offsets", {})
+            if self.address in rssi_offsets:
+                legacy_value = float(rssi_offsets[self.address])
+                # Save the legacy value as entity state
+                self.restored_data = NumberExtraStoredData(
+                    native_value=legacy_value,
+                    native_max_value=None,
+                    native_min_value=None,
+                    native_step=None,
+                    native_unit_of_measurement=None
+                )
+                # Write state immediately to persist the migration
+                self.async_write_ha_state()
+
+        # Trigger reload so BermudaAdvert picks up values
+        self.coordinator.reload_all_advert_configs()
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - check for config flow changes."""
+        # Check if the legacy config has a new value
+        rssi_offsets = self.coordinator.options.get("rssi_offsets", {})
+        if self.address in rssi_offsets:
+            legacy_value = float(rssi_offsets[self.address])
+            # If entity state differs from config, update entity to match
+            current_value = self.restored_data.native_value if self.restored_data else None
+            if current_value != legacy_value:
+                self.restored_data = NumberExtraStoredData(
+                    native_value=legacy_value,
+                    native_max_value=None,
+                    native_min_value=None,
+                    native_step=None,
+                    native_unit_of_measurement=None
+                )
+                self.coordinator.reload_all_advert_configs()
+        super()._handle_coordinator_update()
 
     @property
     def native_value(self) -> float | None:
