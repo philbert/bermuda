@@ -209,6 +209,10 @@ class BermudaScannerRSSIOffset(BermudaEntity, RestoreNumber):
         """Return value of RSSI offset."""
         if self.restored_data is not None and self.restored_data.native_value is not None:
             return self.restored_data.native_value
+        # Check legacy CONF_RSSI_OFFSETS config for migration
+        rssi_offsets = self.coordinator.options.get("rssi_offsets", {})
+        if self.address in rssi_offsets:
+            return float(rssi_offsets[self.address])
         # Default to 0 (no offset)
         return 0.0
 
