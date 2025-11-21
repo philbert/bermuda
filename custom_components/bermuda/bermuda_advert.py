@@ -94,9 +94,10 @@ class BermudaAdvert(dict):
         self.hist_distance_by_interval: list[float] = []  # updated per-interval
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
-        self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
+        # Use coordinator helper method with fallback to legacy config
+        self.conf_rssi_offset = self._device._coordinator.get_scanner_rssi_offset(self.scanner_address)
         self.conf_ref_power = self.options.get(CONF_REF_POWER)
-        self.conf_attenuation = self.options.get(CONF_ATTENUATION)
+        self.conf_attenuation = self._device._coordinator.get_scanner_attenuation(self.scanner_address)
         self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
         self.local_name: list[tuple[str, bytes]] = []
@@ -116,6 +117,11 @@ class BermudaAdvert(dict):
         self.area_name: str | None = scanner_device.area_name
         # Only remote scanners log timestamps, local usb adaptors do not.
         self.scanner_sends_stamps = scanner_device.is_remote_scanner
+
+    def reload_config_values(self):
+        """Reload configuration values from coordinator (for when entity values change)."""
+        self.conf_rssi_offset = self._device._coordinator.get_scanner_rssi_offset(self.scanner_address)
+        self.conf_attenuation = self._device._coordinator.get_scanner_attenuation(self.scanner_address)
 
     def update_advertisement(self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice):
         """

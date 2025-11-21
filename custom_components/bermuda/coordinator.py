@@ -323,6 +323,88 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self._scanners.remove(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
+    def get_scanner_rssi_offset(self, scanner_address: str) -> float:
+        """
+        Get RSSI offset for a scanner with value resolution priority.
+
+        Priority: Entity state > Config entry data > Global default (0)
+        """
+        # First check if entity exists and has a value
+        scanner_device = self.devices.get(scanner_address)
+        if scanner_device:
+            unique_id = f"{scanner_device.unique_id}_scanner_rssi_offset"
+            entity_id = self.er.async_get_entity_id(Platform.NUMBER, DOMAIN, unique_id)
+            if entity_id:
+                state = self.hass.states.get(entity_id)
+                if state and state.state not in ("unknown", "unavailable"):
+                    try:
+                        return float(state.state)
+                    except (ValueError, TypeError):
+                        pass
+
+        # Fall back to config entry data (legacy CONF_RSSI_OFFSETS)
+        rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
+        if scanner_address in rssi_offsets:
+            return float(rssi_offsets[scanner_address])
+
+        # Default to 0 (no offset)
+        return 0.0
+
+    def get_scanner_attenuation(self, scanner_address: str) -> float:
+        """
+        Get attenuation for a scanner with value resolution priority.
+
+        Priority: Entity state > Config entry data > Global default
+        """
+        # First check if entity exists and has a value
+        scanner_device = self.devices.get(scanner_address)
+        if scanner_device:
+            unique_id = f"{scanner_device.unique_id}_scanner_attenuation"
+            entity_id = self.er.async_get_entity_id(Platform.NUMBER, DOMAIN, unique_id)
+            if entity_id:
+                state = self.hass.states.get(entity_id)
+                if state and state.state not in ("unknown", "unavailable"):
+                    try:
+                        return float(state.state)
+                    except (ValueError, TypeError):
+                        pass
+
+        # Fall back to global config
+        return float(self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION))
+
+    def get_scanner_max_radius(self, scanner_address: str) -> float:
+        """
+        Get max radius for a scanner with value resolution priority.
+
+        Priority: Entity state > Config entry data > Global default
+        """
+        # First check if entity exists and has a value
+        scanner_device = self.devices.get(scanner_address)
+        if scanner_device:
+            unique_id = f"{scanner_device.unique_id}_scanner_max_radius"
+            entity_id = self.er.async_get_entity_id(Platform.NUMBER, DOMAIN, unique_id)
+            if entity_id:
+                state = self.hass.states.get(entity_id)
+                if state and state.state not in ("unknown", "unavailable"):
+                    try:
+                        return float(state.state)
+                    except (ValueError, TypeError):
+                        pass
+
+        # Fall back to global config
+        return float(self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS))
+
+    def reload_all_advert_configs(self):
+        """
+        Reload configuration values for all BermudaAdvert instances.
+
+        Called when scanner Number entity values change.
+        """
+        for device in self.devices.values():
+            for advert in device.adverts.values():
+                advert.reload_config_values()
+        _LOGGER.debug("Reloaded advert configurations for all devices")
+
     def get_manufacturer_from_id(self, uuid: int | str) -> tuple[str, bool] | tuple[None, None]:
         """
         An opinionated Bluetooth UUID to Name mapper.
