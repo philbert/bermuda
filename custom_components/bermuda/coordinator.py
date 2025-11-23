@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -108,6 +109,28 @@ if TYPE_CHECKING:
 
 Cancellable = Callable[[], None]
 
+
+class _SuppressTimingLogger:
+    """Wrapper that hides DEBUG-level availability checks from HA's coordinator."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def __getattr__(self, name: str):
+        """Delegate everything but isEnabledFor/debug to the wrapped logger."""
+        return getattr(self._logger, name)
+
+    def isEnabledFor(self, level: int) -> bool:
+        """Report DEBUG as disabled so DataUpdateCoordinator skips timing logs."""
+        if level == logging.DEBUG:
+            return False
+        return self._logger.isEnabledFor(level)
+
+    def debug(self, msg, *args, **kwargs):
+        """Still emit debug logs for all other code paths."""
+        self._logger.debug(msg, *args, **kwargs)
+
+
 # Using "if" instead of "min/max" triggers PLR1730, but when
 # split over two lines, ruff removes it, then complains again.
 # so we're just disabling it for the whole file.
@@ -173,7 +196,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         super().__init__(
             hass,
-            _LOGGER,
+            _SuppressTimingLogger(_LOGGER),
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
