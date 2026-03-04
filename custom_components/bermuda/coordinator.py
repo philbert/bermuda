@@ -1547,6 +1547,22 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         second = contenders[1] if len(contenders) > 1 else None
         best_label = best.advert.scanner_address if best is not None else AREA_NAME_UNKNOWN
         state.dominant_history.append(best_label)
+        # DESIGN CONCERN — dominant_history records pre-unknown-check votes
+        #
+        # best_label is appended unconditionally here, before the unknown/ambiguity
+        # gates below have run. This means that in cycles where the device transitions
+        # to (or stays in) Unknown, the scanner that happened to score highest still
+        # accumulates majority-vote credit. When the device later recovers, those
+        # pre-unknown votes can cause the majority gate to fire faster for that scanner,
+        # even if the physical situation has changed (e.g. the device moved to a
+        # different room while out of reliable range).
+        #
+        # One option: append best_label only when unknown_reason is ultimately None
+        # (i.e. move the append after the gating block). The downside is that periods
+        # of Unknown stop contributing history at all, which could slow slow-lane
+        # switching immediately after recovery. Another option: append AREA_NAME_UNKNOWN
+        # as the label whenever unknown_reason fires, so Unknown cycles dilute any
+        # scanner's majority count rather than silently boosting the pre-unknown winner.
 
         incumbent_advert = device.area_advert
         incumbent = next((c for c in contenders if incumbent_advert is not None and c.advert is incumbent_advert), None)
@@ -1556,8 +1572,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         # Unknown/Uncovered gating: weak, ambiguous, or edge-of-radius with tiny separation.
         unknown_reason: str | None = None
         if best is None:
+            # Clear the ambiguity timer so it doesn't carry over into the next appearance.
+            # If left set, a device that disappears while ambiguous and returns after
+            # ambiguity_hold_seconds would fire the ambiguous_ratio unknown immediately
+            # without waiting for the grace period.
+            state.ambiguous_since = 0.0
             unknown_reason = "no_valid_contender"
         elif best.rssi_filtered < policy.min_rssi_confidence:
+            # Same timer-hygiene: a weak-signal exit doesn't clear ambiguous_since, so
+            # reset it here to prevent a stale timestamp triggering instant-unknown on return.
+            state.ambiguous_since = 0.0
             unknown_reason = f"weak_rssi({best.rssi_filtered:.1f}dBm)"
         elif second is not None:
             ambiguous_ratio = best.score / max(second.score, 1e-9)
@@ -1581,7 +1605,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Hold unknown until evidence becomes clearly dominant.
         if unknown_reason is None and device.area_is_unknown and best is not None:
-            if second is None or (best.score / max(second.score, 1e-9)) < policy.unknown_exit_ratio:
+            # Only require a dominant ratio when there IS a second contender to compare against.
+            # When second is None the best scanner is unambiguously the closest visible scanner,
+            # which is actually strong evidence — requiring a non-existent competitor's score
+            # would permanently trap single-scanner environments in Unknown state.
+            if second is not None and (best.score / max(second.score, 1e-9)) < policy.unknown_exit_ratio:
                 unknown_reason = "hold_unknown_until_clear"
 
         if unknown_reason is not None:
