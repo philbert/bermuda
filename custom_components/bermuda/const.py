@@ -39,6 +39,7 @@ PLATFORMS = [
     Platform.SENSOR,
     Platform.DEVICE_TRACKER,
     Platform.NUMBER,
+    Platform.SELECT,
     # Platform.BUTTON,
     # Platform.SWITCH,
     # Platform.BINARY_SENSOR
@@ -197,6 +198,15 @@ DOCS[CONF_SMOOTHING_SAMPLES] = (
     "How many samples to average distance smoothing. Bigger numbers"
     " make for slower distance increases. 10 or 20 seems good."
 )
+
+# Per-device mobility mode controls responsiveness and hysteresis behavior.
+MOBILITY_MOVING: Final = "moving"
+MOBILITY_STATIONARY: Final = "stationary"
+MOBILITY_OPTIONS: Final = [MOBILITY_STATIONARY, MOBILITY_MOVING]
+DEFAULT_MOBILITY_TYPE: Final = MOBILITY_MOVING
+
+# Explicit area outcome when coverage/evidence is weak or ambiguous.
+AREA_NAME_UNKNOWN: Final = "Unknown"
 
 # Defaults
 DEFAULT_NAME = DOMAIN

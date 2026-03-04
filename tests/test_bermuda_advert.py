@@ -35,6 +35,8 @@ def mock_parent_device(mock_coordinator):
     device.ref_power = -59
     device.name_bt_local_name = None
     device.name = "mock parent name"
+    device.prefname = "mock parent name"
+    device.get_mobility_type.return_value = "moving"
     device._coordinator = mock_coordinator
     return device
 
@@ -149,3 +151,32 @@ def test_repr(bermuda_advert):
     """Test __repr__ method."""
     repr_str = repr(bermuda_advert)
     assert repr_str == "aa:bb:cc:dd:ee:ff__Mock Scanner"
+
+
+def test_rssi_outlier_is_clamped(bermuda_advert):
+    """Spiky RSSI samples should be clamped close to the rolling median."""
+    bermuda_advert.rssi_filtered = -70.0
+    bermuda_advert.hist_rssi_adjusted = [-70.0] * 9
+    bermuda_advert.hist_rssi_filtered = [-70.0] * 9
+    filtered = bermuda_advert._update_filtered_rssi(-15.0)
+    assert filtered < -60.0
+    assert filtered > -75.0
+
+
+def test_mobility_changes_ema_responsiveness(bermuda_advert, mock_parent_device):
+    """Moving mode should react faster than stationary mode to the same RSSI step."""
+    bermuda_advert.rssi_filtered = -90.0
+    bermuda_advert.hist_rssi_adjusted = [-90.0] * 9
+    bermuda_advert.hist_rssi_filtered = [-90.0] * 9
+
+    mock_parent_device.get_mobility_type.return_value = "moving"
+    moving = bermuda_advert._update_filtered_rssi(-70.0)
+
+    bermuda_advert.rssi_filtered = -90.0
+    bermuda_advert.hist_rssi_adjusted = [-90.0] * 13
+    bermuda_advert.hist_rssi_filtered = [-90.0] * 13
+
+    mock_parent_device.get_mobility_type.return_value = "stationary"
+    stationary = bermuda_advert._update_filtered_rssi(-70.0)
+
+    assert moving > stationary

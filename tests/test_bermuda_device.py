@@ -55,6 +55,7 @@ def test_bermuda_device_initialization(bermuda_device):
     assert bermuda_device.area_icon == ICON_DEFAULT_AREA
     assert bermuda_device.floor_icon == ICON_DEFAULT_FLOOR
     assert bermuda_device.zone == "not_home"
+    assert bermuda_device.get_mobility_type() == "moving"
 
 
 def test_async_as_scanner_init(bermuda_scanner, mock_scanner):

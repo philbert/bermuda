@@ -36,6 +36,7 @@ from .const import (
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
+    AREA_NAME_UNKNOWN,
     BDADDR_TYPE_NOT_MAC48,
     BDADDR_TYPE_OTHER,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
@@ -44,6 +45,7 @@ from .const import (
     BDADDR_TYPE_UNKNOWN,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
+    DEFAULT_MOBILITY_TYPE,
     DEFAULT_DEVTRACK_TIMEOUT,
     DOMAIN,
     ICON_DEFAULT_AREA,
@@ -51,6 +53,8 @@ from .const import (
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_PRIVATE_BLE_DEVICE,
     METADEVICE_TYPE_IBEACON_SOURCE,
+    MOBILITY_MOVING,
+    MOBILITY_OPTIONS,
 )
 from .util import mac_math_offset, mac_norm
 
@@ -135,10 +139,13 @@ class BermudaDevice(dict):
         self.create_sensor_done: bool = False  # Sensor should now exist
         self.create_tracker_done: bool = False  # device_tracker should now exist
         self.create_number_done: bool = False
+        self.create_select_done: bool = False
         self.create_button_done: bool = False
         self.create_all_done: bool = False  # All platform entities are done and ready.
         self.last_seen: float = 0  # stamp from most recent scanner spotting. monotonic_time_coarse
         self.diag_area_switch: str | None = None  # saves output of AreaTests
+        self.mobility_type: str = DEFAULT_MOBILITY_TYPE
+        self.area_is_unknown: bool = False
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
         ] = {}  # str will be a scanner address OR a deviceaddress__scanneraddress
@@ -415,12 +422,13 @@ class BermudaDevice(dict):
 
         self._update_area_and_floor(_area_id)
 
-    def _update_area_and_floor(self, area_id: str | None):
+    def _update_area_and_floor(self, area_id: str | None, force_unknown: bool = False):
         """Given an area_id, update the area and floor properties."""
+        self.area_is_unknown = force_unknown and area_id is None
         if area_id is None:
             self.area = None
             self.area_id = None
-            self.area_name = None
+            self.area_name = AREA_NAME_UNKNOWN if force_unknown else None
             self.area_icon = ICON_DEFAULT_AREA
             self.floor = None
             self.floor_id = None
@@ -641,7 +649,20 @@ class BermudaDevice(dict):
             # new measurement(s) immediately.
             self.ref_power_changed = monotonic_time_coarse()
 
-    def apply_scanner_selection(self, bermuda_advert: BermudaAdvert | None):
+    def get_mobility_type(self) -> str:
+        """Return validated mobility mode."""
+        if self.mobility_type in MOBILITY_OPTIONS:
+            return self.mobility_type
+        return MOBILITY_MOVING
+
+    def set_mobility_type(self, mobility_type: str | None):
+        """Set mobility mode with validation."""
+        if mobility_type in MOBILITY_OPTIONS:
+            self.mobility_type = str(mobility_type)
+        else:
+            self.mobility_type = DEFAULT_MOBILITY_TYPE
+
+    def apply_scanner_selection(self, bermuda_advert: BermudaAdvert | None, force_unknown: bool = False):
         """
         Given a BermudaAdvert entry, apply the distance and area attributes
         from it to this device.
@@ -652,7 +673,7 @@ class BermudaDevice(dict):
         if bermuda_advert is not None and bermuda_advert.rssi_distance is not None:
             # We found a winner
             self.area_advert = bermuda_advert
-            self._update_area_and_floor(bermuda_advert.area_id)
+            self._update_area_and_floor(bermuda_advert.area_id, force_unknown=False)
             self.area_distance = bermuda_advert.rssi_distance
             self.area_rssi = bermuda_advert.rssi
             self.area_last_seen = self.area_name
@@ -661,7 +682,7 @@ class BermudaDevice(dict):
         else:
             # Not close to any scanners, or closest scanner has timed out!
             self.area_advert = None
-            self._update_area_and_floor(None)
+            self._update_area_and_floor(None, force_unknown=force_unknown)
             self.area_distance = None
             self.area_rssi = None
 
