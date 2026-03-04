@@ -345,26 +345,10 @@ class BermudaAdvert(dict):
                         med,
                         threshold,
                     )
-                sample = med
-                # DESIGN CONCERN — outlier clamping delays genuine retreats
-                #
-                # When a device genuinely moves away from a scanner its RSSI drops
-                # (becomes more negative). Each new weaker reading is treated as an
-                # outlier and clamped back to the historical median (which is still
-                # the old, closer value). The EMA then creeps toward the true value
-                # only as the median itself drifts over many cycles. Combined with
-                # the "sticky minimum" in calculate_data this can add tens of seconds
-                # of lag before the filtered distance reflects the real retreat, which
-                # in turn slows area switches when the device moves away.
-                #
-                # One possible improvement: clamp to the threshold boundary rather
-                # than to the median, so a legitimate retreat is partially reflected
-                # immediately (sample = med - threshold if sample < med - threshold).
-                # Alternatively, detect a sustained directional trend (several
-                # consecutive readings all weaker than the median) and treat that as
-                # a genuine retreat rather than noise.  The solution needs to preserve
-                # robustness against single-packet noise bursts while allowing the
-                # filter to track real slow retreats.
+                sample = max(med - threshold, min(sample, med + threshold))
+                # Winsorize to med±threshold rather than clamping to med, so
+                # direction is preserved. A genuine retreat (weaker RSSI) still
+                # shifts the filter each cycle; a noise spike is still bounded.
 
         if self.rssi_filtered is None:
             self.rssi_filtered = sample

@@ -1545,24 +1545,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         contenders.sort(key=lambda c: (-c.score, c.advert.rssi_distance or 999.0))
         best = contenders[0] if contenders else None
         second = contenders[1] if len(contenders) > 1 else None
-        best_label = best.advert.scanner_address if best is not None else AREA_NAME_UNKNOWN
-        state.dominant_history.append(best_label)
-        # DESIGN CONCERN — dominant_history records pre-unknown-check votes
-        #
-        # best_label is appended unconditionally here, before the unknown/ambiguity
-        # gates below have run. This means that in cycles where the device transitions
-        # to (or stays in) Unknown, the scanner that happened to score highest still
-        # accumulates majority-vote credit. When the device later recovers, those
-        # pre-unknown votes can cause the majority gate to fire faster for that scanner,
-        # even if the physical situation has changed (e.g. the device moved to a
-        # different room while out of reliable range).
-        #
-        # One option: append best_label only when unknown_reason is ultimately None
-        # (i.e. move the append after the gating block). The downside is that periods
-        # of Unknown stop contributing history at all, which could slow slow-lane
-        # switching immediately after recovery. Another option: append AREA_NAME_UNKNOWN
-        # as the label whenever unknown_reason fires, so Unknown cycles dilute any
-        # scanner's majority count rather than silently boosting the pre-unknown winner.
+        # dominant_history is appended at each exit point below with the resolved
+        # outcome (chosen scanner address or AREA_NAME_UNKNOWN) rather than here
+        # with the pre-gating best, so Unknown cycles never inflate any scanner's
+        # majority vote count.
 
         incumbent_advert = device.area_advert
         incumbent = next((c for c in contenders if incumbent_advert is not None and c.advert is incumbent_advert), None)
@@ -1630,6 +1616,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         unknown_reason,
                         unknown_age,
                     )
+                state.dominant_history.append(incumbent.advert.scanner_address)
                 device.apply_scanner_selection(incumbent.advert)
                 return
 
@@ -1645,6 +1632,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     f"{best.advert.name}:{best.score:.3f}" if best is not None else "None",
                     f"{second.advert.name}:{second.score:.3f}" if second is not None else "None",
                 )
+            state.dominant_history.append(AREA_NAME_UNKNOWN)
             device.apply_scanner_selection(None, force_unknown=True)
             return
 
@@ -1652,6 +1640,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         state.unknown_since = 0.0
         chosen = best
         if chosen is None:
+            state.dominant_history.append(AREA_NAME_UNKNOWN)
             device.apply_scanner_selection(None)
             return
 
@@ -1666,7 +1655,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         f"age={nowstamp - state.challenger_since:.1f}s"
                     )
                     if device.area_is_unknown:
+                        state.dominant_history.append(AREA_NAME_UNKNOWN)
                         device.apply_scanner_selection(None, force_unknown=True)
+                    # else: device stays in prior valid area; skip history entry
+                    # since no state changed and the new scanner is not yet confirmed.
                     return
             tests.reason = "WIN initial_valid_contender"
             state.challenger_scanner = None
@@ -1759,6 +1751,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         if device.area_advert != chosen.advert and tests.reason is not None:
             device.diag_area_switch = tests.sensortext()
 
+        state.dominant_history.append(chosen.advert.scanner_address)
         device.apply_scanner_selection(chosen.advert)
 
     def _refresh_scanners(self, force=False):

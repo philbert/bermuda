@@ -163,6 +163,23 @@ def test_rssi_outlier_is_clamped(bermuda_advert):
     assert filtered > -75.0
 
 
+def test_winsorize_outlier_preserves_retreat_direction(bermuda_advert, mock_parent_device):
+    """A large genuine retreat should shift the filter toward the new value, not stay stuck."""
+    mock_parent_device.get_mobility_type.return_value = "moving"
+    # Stable history at -60 dBm (moving window=9, alpha=0.45).
+    bermuda_advert.rssi_filtered = -60.0
+    bermuda_advert.hist_rssi_adjusted = [-60.0] * 9
+    bermuda_advert.hist_rssi_filtered = [-60.0] * 9
+
+    # Large genuine retreat: -90 dBm is 30 dBm below median; threshold ~12 dBm.
+    # Old clamp-to-median behaviour would leave filtered at -60.0.
+    # Winsorize to med-threshold = -72 dBm, then EMA: alpha*-72 + (1-alpha)*-60 ≈ -65.4.
+    filtered = bermuda_advert._update_filtered_rssi(-90.0)
+
+    assert filtered < -60.0, "filter should move toward the retreat, not stay at old median"
+    assert filtered > -90.0, "filter should not jump all the way to the new reading in one step"
+
+
 def test_mobility_changes_ema_responsiveness(bermuda_advert, mock_parent_device):
     """Moving mode should react faster than stationary mode to the same RSSI step."""
     bermuda_advert.rssi_filtered = -90.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+from custom_components.bermuda.const import AREA_NAME_UNKNOWN
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
@@ -111,3 +112,40 @@ def test_unknown_entry_is_delayed_while_incumbent_exists():
     # First weak detection should keep incumbent instead of flapping to Unknown immediately.
     assert device.applied[-1][0] is incumbent
     assert device.applied[-1][1] is False
+
+
+def test_unknown_cycles_record_unknown_in_dominant_history():
+    """Unknown periods should not accumulate majority-vote credit for any scanner."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-d", mobility_type="stationary")
+
+    # Two ambiguous adverts — scores very close, ratio well below ambiguity_ratio (1.2).
+    advert_a = _make_advert("scanner_a", "Kitchen", -96.0, 8.0)
+    advert_b = _make_advert("scanner_b", "Hallway", -96.1, 8.1)
+    device.adverts = {("dev-d", "scanner_a"): advert_a, ("dev-d", "scanner_b"): advert_b}
+
+    # Run once to initialise AreaDecisionState for this device.
+    coordinator._refresh_area_by_min_distance(device)
+
+    # Force ambiguous_since into the past so the hold timer is already expired.
+    state = coordinator._get_area_decision_state(device)
+    state.ambiguous_since = time.monotonic() - 100.0
+
+    # Run again — this time the ambiguity gate should fire and resolve to Unknown.
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_is_unknown, "device should be in Unknown state"
+
+    # The history entry recorded for the Unknown cycle must be AREA_NAME_UNKNOWN,
+    # not either scanner's address — Unknown periods must not inflate scanner votes.
+    assert state.dominant_history[-1] == AREA_NAME_UNKNOWN, (
+        f"last history entry should be AREA_NAME_UNKNOWN, got {state.dominant_history[-1]!r}"
+    )
+    recent = list(state.dominant_history)
+    unknown_count = recent.count(AREA_NAME_UNKNOWN)
+    a_count = recent.count("scanner_a")
+    b_count = recent.count("scanner_b")
+    assert unknown_count > 0
+    assert a_count + b_count < unknown_count, (
+        "scanner votes should not outnumber Unknown entries after a sustained ambiguous period"
+    )
