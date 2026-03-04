@@ -449,7 +449,7 @@ class BermudaDevice(dict):
                 if self.floor is not None:
                     self.floor_name = self.floor.name
                     self.floor_icon = self.floor.icon or ICON_DEFAULT_FLOOR
-                    self.floor_level = self.floor_level
+                    self.floor_level = self.floor.level
                 else:
                     # floor_id was invalid
                     _LOGGER_SPAM_LESS.warning(
