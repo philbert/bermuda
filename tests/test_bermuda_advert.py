@@ -33,9 +33,12 @@ def mock_parent_device(mock_coordinator):
     device = MagicMock(spec=BermudaDevice)
     device.address = "aa:bb:cc:dd:ee:ff"
     device.ref_power = -59
-    device.name_bt_local_name = None
     device.name = "mock parent name"
     device.prefname = "mock parent name"
+    device.name_bt_local_name = None
+    device.name_by_user = None
+    device.name_devreg = None
+    device.name_bt_serviceinfo = None
     device.get_mobility_type.return_value = "moving"
     device._coordinator = mock_coordinator
     return device
