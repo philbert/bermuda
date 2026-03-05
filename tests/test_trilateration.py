@@ -23,20 +23,22 @@ def test_anchor_centroid():
 
 
 def test_solve_2d_soft_l1_returns_expected_point():
-    """Solver should recover a stable point from consistent anchors."""
+    """Solver should recover the circumcenter of a right triangle exactly."""
+    # Right triangle A(0,0) B(6,0) C(0,8): circumcenter is the midpoint of the
+    # hypotenuse at (3, 4), equidistant from all three vertices at 5 m.
     anchors = [
         AnchorMeasurement("a", 0.0, 0.0, 5.0),
-        AnchorMeasurement("b", 10.0, 0.0, math.hypot(6.0, 4.0)),
-        AnchorMeasurement("c", 0.0, 10.0, math.hypot(4.0, 6.0)),
+        AnchorMeasurement("b", 6.0, 0.0, 5.0),
+        AnchorMeasurement("c", 0.0, 8.0, 5.0),
     ]
-    result = solve_2d_soft_l1(anchors, initial_guess=(4.5, 4.5))
+    result = solve_2d_soft_l1(anchors, initial_guess=(4.0, 4.0))
     assert result.ok
     assert result.x_m is not None
     assert result.y_m is not None
     assert result.residual_rms_m is not None
-    assert abs(result.x_m - 4.0) < 0.2
-    assert abs(result.y_m - 3.0) < 0.2
-    assert result.residual_rms_m < 0.35
+    assert abs(result.x_m - 3.0) < 0.1
+    assert abs(result.y_m - 4.0) < 0.1
+    assert result.residual_rms_m < 0.01
 
 
 def test_solve_2d_soft_l1_rejects_two_anchor_case():
@@ -51,11 +53,12 @@ def test_solve_2d_soft_l1_rejects_two_anchor_case():
 
 
 def test_residual_rms_m():
-    """Residual RMS should be near zero for an exact point."""
+    """Residual RMS should be near zero when the point satisfies all anchors exactly."""
+    # Same right-triangle geometry: circumcenter (3, 4) is exactly 5 m from each vertex.
     anchors = [
         AnchorMeasurement("a", 0.0, 0.0, 5.0),
-        AnchorMeasurement("b", 10.0, 0.0, 5.0),
-        AnchorMeasurement("c", 5.0, 8.660254, 3.660254),
+        AnchorMeasurement("b", 6.0, 0.0, 5.0),
+        AnchorMeasurement("c", 0.0, 8.0, 5.0),
     ]
-    rms = residual_rms_m(5.0, 0.0, anchors)
+    rms = residual_rms_m(3.0, 4.0, anchors)
     assert rms < 1e-3
