@@ -73,6 +73,8 @@ from .const import (
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
+    CONF_TRILAT_CROSS_FLOOR_PENALTY_DB,
+    CONF_TRILAT_ENABLED,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
     DEFAULT_ATTENUATION,
@@ -81,7 +83,10 @@ from .const import (
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
+    DEFAULT_TRILAT_CROSS_FLOOR_PENALTY_DB,
+    DEFAULT_TRILAT_ENABLED,
     DEFAULT_UPDATE_INTERVAL,
+    DISTANCE_TIMEOUT,
     DOMAIN,
     DOMAIN_PRIVATE_BLE_DEVICE,
     MOBILITY_MOVING,
@@ -96,12 +101,14 @@ from .const import (
     PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
+    REPAIR_TRILAT_WITHOUT_ANCHORS,
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
     UPDATE_INTERVAL,
     debug_device_match,
 )
+from .trilateration import AnchorMeasurement, anchor_centroid, solve_2d_soft_l1
 from .util import mac_explode_formats, mac_norm
 
 if TYPE_CHECKING:
@@ -228,6 +235,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._scanners_without_areas: list[str] | None = None  # Tracks any proxies that don't have an area assigned.
         self._area_decision_state: dict[str, BermudaDataUpdateCoordinator.AreaDecisionState] = {}
+        self._trilat_decision_state: dict[str, BermudaDataUpdateCoordinator.TrilatDecisionState] = {}
+        self._trilat_scanners_without_anchors: list[str] | None = None
 
         # Track the list of Private BLE devices, noting their entity id
         # and current "last address".
@@ -278,6 +287,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
+        self.options[CONF_TRILAT_ENABLED] = DEFAULT_TRILAT_ENABLED
+        self.options[CONF_TRILAT_CROSS_FLOOR_PENALTY_DB] = DEFAULT_TRILAT_CROSS_FLOOR_PENALTY_DB
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -294,6 +305,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     CONF_REF_POWER,
                     CONF_SMOOTHING_SAMPLES,
                     CONF_RSSI_OFFSETS,
+                    CONF_TRILAT_ENABLED,
+                    CONF_TRILAT_CROSS_FLOOR_PENALTY_DB,
                 ):
                     self.options[key] = val
 
@@ -403,6 +416,46 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Fall back to global default
         return self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+    def get_scanner_anchor_enabled(self, scanner_address: str) -> bool:
+        """Return whether scanner should be used as a trilat anchor."""
+        if scanner_address in self.devices:
+            return bool(getattr(self.devices[scanner_address], "anchor_enabled", False))
+        return False
+
+    def get_scanner_anchor_x(self, scanner_address: str) -> float | None:
+        """Return scanner trilat X coordinate in meters."""
+        if scanner_address in self.devices:
+            return getattr(self.devices[scanner_address], "anchor_x_m", None)
+        return None
+
+    def get_scanner_anchor_y(self, scanner_address: str) -> float | None:
+        """Return scanner trilat Y coordinate in meters."""
+        if scanner_address in self.devices:
+            return getattr(self.devices[scanner_address], "anchor_y_m", None)
+        return None
+
+    def get_scanner_anchor_z(self, scanner_address: str) -> float | None:
+        """Return scanner trilat Z coordinate in meters."""
+        if scanner_address in self.devices:
+            return getattr(self.devices[scanner_address], "anchor_z_m", None)
+        return None
+
+    def trilat_enabled(self) -> bool:
+        """Return true if trilateration is enabled."""
+        if self.options.get(CONF_TRILAT_ENABLED, DEFAULT_TRILAT_ENABLED):
+            return True
+        # Also allow implicit enable when any scanner anchor has been enabled.
+        return any(getattr(device, "anchor_enabled", False) for device in self._scanners)
+
+    def trilat_cross_floor_penalty_db(self) -> float:
+        """Return configured cross-floor RSSI penalty for floor evidence."""
+        return float(
+            self.options.get(
+                CONF_TRILAT_CROSS_FLOOR_PENALTY_DB,
+                DEFAULT_TRILAT_CROSS_FLOOR_PENALTY_DB,
+            )
+        )
 
     def reload_all_advert_configs(self) -> None:
         """
@@ -762,6 +815,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 device.calculate_data()
 
             self._refresh_areas_by_min_distance()
+            self._refresh_trilateration()
 
             # We might need to freshen deliberately on first start if no new scanners
             # were discovered in the first scan update. This is likely if nothing has changed
@@ -1002,6 +1056,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Acting on prune list for %s", device_address)
             del self.devices[device_address]
             self._area_decision_state.pop(device_address, None)
+            self._trilat_decision_state.pop(device_address, None)
 
         # Clean out the scanners dicts in metadevices and scanners
         # (scanners will have entries if they are also beacons, although
@@ -1441,6 +1496,33 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         ambiguous_since: float = 0.0
         unknown_since: float = 0.0
 
+    @dataclass
+    class TrilatMobilityPolicy:
+        """Mobility-aware policy for floor hysteresis and trilat EWMA."""
+
+        floor_dwell_seconds: float
+        floor_switch_margin: float
+        trilat_alpha: float
+
+    @dataclass
+    class TrilatDecisionState:
+        """Per-device state for floor and trilat solve smoothing."""
+
+        floor_id: str | None = None
+        floor_challenger_id: str | None = None
+        floor_challenger_since: float = 0.0
+        floor_ambiguous_since: float = 0.0
+        last_anchor_ids: tuple[str, ...] = ()
+        last_anchor_ranges: dict[str, float] = field(default_factory=dict)
+        last_solution_xy: tuple[float, float] | None = None
+        last_residual_m: float | None = None
+        last_status: str = "unknown"
+
+    _TRILAT_MIN_ANCHORS: int = 3
+    _TRILAT_MAX_RESIDUAL_M: float = 5.0
+    _TRILAT_FLOOR_AMBIGUITY_RATIO: float = 0.2
+    _TRILAT_RANGE_DELTA_EPSILON_M: float = 0.2
+
     @staticmethod
     def _score_rssi(rssi_filtered: float | None) -> float:
         """Convert filtered RSSI to a monotonic confidence score."""
@@ -1482,6 +1564,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     @staticmethod
+    def _trilat_mobility_policy(mobility_type: str) -> TrilatMobilityPolicy:
+        """Return floor/trilat policy for the device mobility mode."""
+        if mobility_type == MOBILITY_STATIONARY:
+            return BermudaDataUpdateCoordinator.TrilatMobilityPolicy(
+                floor_dwell_seconds=24.0,
+                floor_switch_margin=0.22,
+                trilat_alpha=0.20,
+            )
+        return BermudaDataUpdateCoordinator.TrilatMobilityPolicy(
+            floor_dwell_seconds=8.0,
+            floor_switch_margin=0.12,
+            trilat_alpha=0.40,
+        )
+
+    @staticmethod
     def _majority_wins(history: deque[str], candidate: str, window: int, need: int) -> bool:
         """Return true if candidate owns enough of the recent winner history."""
         if window <= 0 or need <= 0:
@@ -1492,6 +1589,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     def _get_area_decision_state(self, device: BermudaDevice) -> AreaDecisionState:
         """Return mutable state holder for area-decision smoothing."""
         return self._area_decision_state.setdefault(device.address, self.AreaDecisionState())
+
+    def _get_trilat_decision_state(self, device: BermudaDevice) -> TrilatDecisionState:
+        """Return mutable state holder for trilat/floor smoothing."""
+        return self._trilat_decision_state.setdefault(device.address, self.TrilatDecisionState())
 
     def _refresh_area_by_min_distance(self, device: BermudaDevice):
         """Resolve a device area using score-based contenders and mobility-aware smoothing."""
@@ -1774,6 +1875,363 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         state.dominant_history.append(chosen.advert.scanner_address)
         device.apply_scanner_selection(chosen.advert)
+
+    @staticmethod
+    def _latest_adverts_by_scanner(device: BermudaDevice):
+        """Return latest advert per scanner for the device."""
+        latest: dict[str, BermudaAdvert] = {}
+        for advert in device.adverts.values():
+            prior = latest.get(advert.scanner_address)
+            if prior is None or advert.stamp > prior.stamp:
+                latest[advert.scanner_address] = advert
+        return latest
+
+    def _resolve_floor_name(self, floor_id: str | None) -> str | None:
+        """Resolve floor name from floor id."""
+        if floor_id is None:
+            return None
+        floor = self.fr.async_get_floor(floor_id)
+        if floor is None:
+            return None
+        return floor.name
+
+    def _async_manage_repair_trilat_without_anchors(self, scannerlist: list[str]):
+        """Raise/clear repair when trilat is enabled but no anchors are configured."""
+        if self._trilat_scanners_without_anchors != scannerlist:
+            self._trilat_scanners_without_anchors = scannerlist
+            ir.async_delete_issue(self.hass, DOMAIN, REPAIR_TRILAT_WITHOUT_ANCHORS)
+            if self._trilat_scanners_without_anchors and len(self._trilat_scanners_without_anchors) != 0:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    REPAIR_TRILAT_WITHOUT_ANCHORS,
+                    translation_key=REPAIR_TRILAT_WITHOUT_ANCHORS,
+                    translation_placeholders={
+                        "scannerlist": "".join(f"- {name}\n" for name in self._trilat_scanners_without_anchors),
+                    },
+                    severity=ir.IssueSeverity.WARNING,
+                    is_fixable=False,
+                )
+
+    def _refresh_trilateration(self) -> None:
+        """Refresh trilateration diagnostics for all tracked devices."""
+        if not self.trilat_enabled():
+            self._async_manage_repair_trilat_without_anchors([])
+            for device in self.devices.values():
+                if device.create_sensor:
+                    device.set_trilat_unknown("disabled")
+            return
+
+        configured_anchor_scanners: list[str] = []
+        for scanner in self._scanners:
+            if (
+                getattr(scanner, "anchor_enabled", False)
+                and self.get_scanner_anchor_x(scanner.address) is not None
+                and self.get_scanner_anchor_y(scanner.address) is not None
+                and scanner.floor_id is not None
+            ):
+                configured_anchor_scanners.append(scanner.address)
+
+        if len(configured_anchor_scanners) == 0:
+            scannerlist = [f"{scanner.name} [{scanner.address}]" for scanner in sorted(self._scanners, key=lambda s: s.name)]
+            self._async_manage_repair_trilat_without_anchors(scannerlist)
+        else:
+            self._async_manage_repair_trilat_without_anchors([])
+
+        for device in self.devices.values():
+            if not device.create_sensor:
+                continue
+            self._refresh_trilateration_for_device(device)
+
+    def _refresh_trilateration_for_device(self, device: BermudaDevice) -> None:
+        """Resolve per-device trilateration diagnostics."""
+        nowstamp = monotonic_time_coarse()
+        latest = self._latest_adverts_by_scanner(device)
+        state = self._get_trilat_decision_state(device)
+        policy = self._trilat_mobility_policy(device.get_mobility_type())
+        _debug_this_device = debug_device_match(
+            device.name,
+            device.prefname,
+            device.address,
+            device.name_by_user,
+            device.name_devreg,
+            device.name_bt_local_name,
+            device.name_bt_serviceinfo,
+        )
+
+        fresh_any = any(advert.stamp >= nowstamp - DISTANCE_TIMEOUT for advert in latest.values())
+        if not fresh_any:
+            device.set_trilat_unknown(
+                "stale_inputs",
+                floor_id=state.floor_id,
+                floor_name=self._resolve_floor_name(state.floor_id),
+                anchor_count=0,
+            )
+            state.last_status = "unknown"
+            if _debug_this_device:
+                _LOGGER_TARGET_SPAM_LESS.debug(
+                    f"trilat_unknown:{device.address}:stale_inputs",
+                    "Trilat: %s -> Unknown (stale_inputs)",
+                    device.name,
+                )
+            return
+
+        evidence_inputs: list[tuple[str, float]] = []
+        penalty_db = self.trilat_cross_floor_penalty_db()
+        for advert in latest.values():
+            if advert.stamp < nowstamp - DISTANCE_TIMEOUT:
+                continue
+            scanner_floor_id = advert.scanner_device.floor_id
+            if scanner_floor_id is None:
+                continue
+            rssi_for_score = advert.rssi_filtered
+            if rssi_for_score is None and advert.rssi is not None:
+                rssi_for_score = advert.rssi + advert.conf_rssi_offset
+            if rssi_for_score is None:
+                continue
+            evidence_inputs.append((scanner_floor_id, rssi_for_score))
+
+        if not evidence_inputs:
+            device.set_trilat_unknown("ambiguous_floor", floor_id=state.floor_id, floor_name=self._resolve_floor_name(state.floor_id))
+            state.last_status = "unknown"
+            return
+
+        floors = sorted({floor_id for floor_id, _rssi in evidence_inputs})
+        floor_evidence: dict[str, float] = {}
+        for candidate_floor_id in floors:
+            evidence = 0.0
+            for scanner_floor_id, rssi_for_score in evidence_inputs:
+                adjusted_rssi = (
+                    rssi_for_score
+                    if scanner_floor_id == candidate_floor_id
+                    else rssi_for_score - penalty_db
+                )
+                evidence += self._score_rssi(adjusted_rssi)
+            floor_evidence[candidate_floor_id] = evidence
+
+        ranked_floors = sorted(floor_evidence.items(), key=lambda row: row[1], reverse=True)
+        best_floor_id, best_floor_score = ranked_floors[0]
+        second_floor_score = ranked_floors[1][1] if len(ranked_floors) > 1 else 0.0
+        total_floor_score = sum(floor_evidence.values())
+        floor_ambiguity = (
+            len(ranked_floors) > 1
+            and total_floor_score > 0.0
+            and ((best_floor_score - second_floor_score) / total_floor_score) < self._TRILAT_FLOOR_AMBIGUITY_RATIO
+        )
+
+        if floor_ambiguity:
+            if state.floor_ambiguous_since <= 0:
+                state.floor_ambiguous_since = nowstamp
+            elif nowstamp - state.floor_ambiguous_since >= policy.floor_dwell_seconds:
+                device.set_trilat_unknown(
+                    "ambiguous_floor",
+                    floor_id=state.floor_id,
+                    floor_name=self._resolve_floor_name(state.floor_id),
+                )
+                state.last_status = "unknown"
+                if _debug_this_device:
+                    _LOGGER_TARGET_SPAM_LESS.debug(
+                        f"trilat_unknown:{device.address}:ambiguous_floor",
+                        "Trilat: %s -> Unknown (ambiguous_floor) best=%s(%.3f) second=%.3f total=%.3f",
+                        device.name,
+                        best_floor_id,
+                        best_floor_score,
+                        second_floor_score,
+                        total_floor_score,
+                    )
+                return
+        else:
+            state.floor_ambiguous_since = 0.0
+
+        prev_floor_id = state.floor_id
+        if state.floor_id is None:
+            state.floor_id = best_floor_id
+            state.floor_challenger_id = None
+            state.floor_challenger_since = 0.0
+        elif best_floor_id != state.floor_id:
+            current_floor_score = floor_evidence.get(state.floor_id, 0.0)
+            floor_margin = (best_floor_score - current_floor_score) / max(best_floor_score, 1e-9)
+            if floor_margin >= policy.floor_switch_margin:
+                if state.floor_challenger_id != best_floor_id:
+                    state.floor_challenger_id = best_floor_id
+                    state.floor_challenger_since = nowstamp
+                elif nowstamp - state.floor_challenger_since >= policy.floor_dwell_seconds:
+                    state.floor_id = best_floor_id
+                    state.floor_challenger_id = None
+                    state.floor_challenger_since = 0.0
+            else:
+                state.floor_challenger_id = None
+                state.floor_challenger_since = 0.0
+        else:
+            state.floor_challenger_id = None
+            state.floor_challenger_since = 0.0
+
+        selected_floor_id = state.floor_id or best_floor_id
+        selected_floor_name = self._resolve_floor_name(selected_floor_id)
+
+        if prev_floor_id is not None and selected_floor_id != prev_floor_id:
+            for advert in latest.values():
+                advert.trilat_range_ewma_m = None
+            state.last_anchor_ids = ()
+            state.last_anchor_ranges.clear()
+            state.last_solution_xy = None
+            state.last_residual_m = None
+
+        anchors: list[AnchorMeasurement] = []
+        for advert in latest.values():
+            if advert.stamp < nowstamp - DISTANCE_TIMEOUT:
+                continue
+            scanner = advert.scanner_device
+            if scanner.floor_id != selected_floor_id:
+                continue
+            if not self.get_scanner_anchor_enabled(scanner.address):
+                continue
+
+            anchor_x = self.get_scanner_anchor_x(scanner.address)
+            anchor_y = self.get_scanner_anchor_y(scanner.address)
+            if anchor_x is None or anchor_y is None:
+                continue
+
+            if advert.rssi_distance_raw is None:
+                continue
+            if advert.rssi_distance is None:
+                continue
+            if advert.rssi_distance > self.get_scanner_max_radius(scanner.address):
+                continue
+
+            if advert.trilat_range_ewma_m is None:
+                advert.trilat_range_ewma_m = advert.rssi_distance_raw
+            else:
+                advert.trilat_range_ewma_m = (policy.trilat_alpha * advert.rssi_distance_raw) + (
+                    (1 - policy.trilat_alpha) * advert.trilat_range_ewma_m
+                )
+            anchors.append(
+                AnchorMeasurement(
+                    scanner_address=scanner.address,
+                    x_m=float(anchor_x),
+                    y_m=float(anchor_y),
+                    range_m=float(advert.trilat_range_ewma_m),
+                )
+            )
+
+        anchor_count = len(anchors)
+        if anchor_count < self._TRILAT_MIN_ANCHORS:
+            device.set_trilat_unknown(
+                "insufficient_anchors",
+                floor_id=selected_floor_id,
+                floor_name=selected_floor_name,
+                anchor_count=anchor_count,
+            )
+            state.last_status = "unknown"
+            if _debug_this_device:
+                _LOGGER_TARGET_SPAM_LESS.debug(
+                    f"trilat_unknown:{device.address}:insufficient_anchors",
+                    "Trilat: %s -> Unknown (insufficient_anchors), floor=%s anchors=%d",
+                    device.name,
+                    selected_floor_name,
+                    anchor_count,
+                )
+            return
+
+        anchors.sort(key=lambda anchor: anchor.scanner_address)
+        anchor_ids = tuple(anchor.scanner_address for anchor in anchors)
+        anchor_ranges = {anchor.scanner_address: anchor.range_m for anchor in anchors}
+
+        inputs_changed = (
+            state.last_anchor_ids != anchor_ids
+            or state.last_solution_xy is None
+            or any(
+                abs(anchor_ranges[address] - state.last_anchor_ranges.get(address, 1e9))
+                >= self._TRILAT_RANGE_DELTA_EPSILON_M
+                for address in anchor_ids
+            )
+        )
+
+        if not inputs_changed and state.last_solution_xy is not None and state.last_residual_m is not None:
+            device.set_trilat_solution(
+                x_m=state.last_solution_xy[0],
+                y_m=state.last_solution_xy[1],
+                floor_id=selected_floor_id,
+                floor_name=selected_floor_name,
+                anchor_count=anchor_count,
+                residual_m=state.last_residual_m,
+            )
+            device.trilat_reason = "skip_unchanged_inputs"
+            if _debug_this_device:
+                _LOGGER_TARGET_SPAM_LESS.debug(
+                    f"trilat_skip:{device.address}",
+                    "Trilat: %s skipped solve (unchanged inputs), floor=%s anchors=%d residual=%.3f",
+                    device.name,
+                    selected_floor_name,
+                    anchor_count,
+                    state.last_residual_m,
+                )
+            return
+
+        centroid = anchor_centroid(anchors)
+        initial_guess = centroid
+        if state.last_solution_xy is not None and selected_floor_id == state.floor_id:
+            if math.hypot(
+                state.last_solution_xy[0] - centroid[0],
+                state.last_solution_xy[1] - centroid[1],
+            ) <= self._TRILAT_MAX_RESIDUAL_M:
+                initial_guess = state.last_solution_xy
+
+        solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess)
+
+        state.last_anchor_ids = anchor_ids
+        state.last_anchor_ranges = anchor_ranges
+
+        if (
+            not solve_result.ok
+            or solve_result.residual_rms_m is None
+            or solve_result.residual_rms_m > self._TRILAT_MAX_RESIDUAL_M
+            or solve_result.x_m is None
+            or solve_result.y_m is None
+        ):
+            device.set_trilat_unknown(
+                "high_residual",
+                floor_id=selected_floor_id,
+                floor_name=selected_floor_name,
+                anchor_count=anchor_count,
+            )
+            state.last_solution_xy = None
+            state.last_residual_m = None
+            state.last_status = "unknown"
+            if _debug_this_device:
+                _LOGGER_TARGET_SPAM_LESS.debug(
+                    f"trilat_unknown:{device.address}:high_residual",
+                    "Trilat: %s -> Unknown (high_residual), floor=%s anchors=%d residual=%s reason=%s",
+                    device.name,
+                    selected_floor_name,
+                    anchor_count,
+                    f"{solve_result.residual_rms_m:.3f}" if solve_result.residual_rms_m is not None else "None",
+                    solve_result.reason,
+                )
+            return
+
+        device.set_trilat_solution(
+            x_m=solve_result.x_m,
+            y_m=solve_result.y_m,
+            floor_id=selected_floor_id,
+            floor_name=selected_floor_name,
+            anchor_count=anchor_count,
+            residual_m=solve_result.residual_rms_m,
+        )
+        state.last_solution_xy = (solve_result.x_m, solve_result.y_m)
+        state.last_residual_m = solve_result.residual_rms_m
+        state.last_status = "ok"
+        if _debug_this_device:
+            _LOGGER_TARGET_SPAM_LESS.debug(
+                f"trilat_ok:{device.address}",
+                "Trilat: %s solved floor=%s anchors=%d x=%.3f y=%.3f residual=%.3f",
+                device.name,
+                selected_floor_name,
+                anchor_count,
+                solve_result.x_m,
+                solve_result.y_m,
+                solve_result.residual_rms_m,
+            )
 
     def _refresh_scanners(self, force=False):
         """

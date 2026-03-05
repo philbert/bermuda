@@ -79,6 +79,13 @@ async def async_setup_entry(
             entities.append(BermudaSensorAreaLastSeen(coordinator, entry, address))
             entities.append(BermudaSensorAreaSwitchReason(coordinator, entry, address))
             entities.append(BermudaSensorMobilityMode(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatX(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatY(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatFloor(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatAnchorCount(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatStatus(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatReason(coordinator, entry, address))
+            entities.append(BermudaSensorTrilatResidual(coordinator, entry, address))
 
             # _LOGGER.debug("Sensor received new_device signal for %s", address)
             # We set update before add to False because we are being
@@ -469,6 +476,161 @@ class BermudaSensorMobilityMode(BermudaSensor):
     @property
     def native_value(self):
         return self._device.get_mobility_type()
+
+
+class BermudaSensorTrilatX(BermudaSensor):
+    """Diagnostic sensor for trilat X coordinate."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_x"
+
+    @property
+    def name(self):
+        return "Trilat X"
+
+    @property
+    def native_value(self):
+        x_val = getattr(self._device, "trilat_x_m", None)
+        if x_val is None:
+            return None
+        return round(x_val, 3)
+
+    @property
+    def device_class(self):
+        return SensorDeviceClass.DISTANCE
+
+    @property
+    def native_unit_of_measurement(self):
+        return UnitOfLength.METERS
+
+
+class BermudaSensorTrilatY(BermudaSensorTrilatX):
+    """Diagnostic sensor for trilat Y coordinate."""
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_y"
+
+    @property
+    def name(self):
+        return "Trilat Y"
+
+    @property
+    def native_value(self):
+        y_val = getattr(self._device, "trilat_y_m", None)
+        if y_val is None:
+            return None
+        return round(y_val, 3)
+
+
+class BermudaSensorTrilatFloor(BermudaSensor):
+    """Diagnostic sensor for chosen trilat floor."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_floor"
+
+    @property
+    def name(self):
+        return "Trilat Floor"
+
+    @property
+    def native_value(self):
+        return getattr(self._device, "trilat_floor_name", None)
+
+
+class BermudaSensorTrilatAnchorCount(BermudaSensor):
+    """Diagnostic sensor for active trilat anchor count."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_anchor_count"
+
+    @property
+    def name(self):
+        return "Trilat Anchor Count"
+
+    @property
+    def native_value(self):
+        return getattr(self._device, "trilat_anchor_count", 0)
+
+    @property
+    def state_class(self):
+        return SensorStateClass.MEASUREMENT
+
+
+class BermudaSensorTrilatStatus(BermudaSensor):
+    """Diagnostic sensor for trilat status."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_status"
+
+    @property
+    def name(self):
+        return "Trilat Status"
+
+    @property
+    def native_value(self):
+        return getattr(self._device, "trilat_status", "unknown")
+
+
+class BermudaSensorTrilatReason(BermudaSensor):
+    """Diagnostic sensor for trilat unknown/decision reason."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_reason"
+
+    @property
+    def name(self):
+        return "Trilat Reason"
+
+    @property
+    def native_value(self):
+        return getattr(self._device, "trilat_reason", None)
+
+
+class BermudaSensorTrilatResidual(BermudaSensor):
+    """Diagnostic sensor for trilat residual RMS."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_trilat_residual"
+
+    @property
+    def name(self):
+        return "Trilat Residual"
+
+    @property
+    def native_value(self):
+        residual = getattr(self._device, "trilat_residual_m", None)
+        if residual is None:
+            return None
+        return round(residual, 3)
+
+    @property
+    def device_class(self):
+        return SensorDeviceClass.DISTANCE
+
+    @property
+    def native_unit_of_measurement(self):
+        return UnitOfLength.METERS
 
 
 class BermudaSensorAreaLastSeen(BermudaSensor, RestoreSensor):

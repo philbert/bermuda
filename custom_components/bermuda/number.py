@@ -10,7 +10,7 @@ from homeassistant.components.number import (
     NumberMode,
     RestoreNumber,
 )
-from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT, EntityCategory
+from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT, EntityCategory, UnitOfLength
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -70,6 +70,9 @@ async def async_setup_entry(
                 entities.append(BermudaScannerRSSIOffset(coordinator, entry, address))
                 entities.append(BermudaScannerAttenuation(coordinator, entry, address))
                 entities.append(BermudaScannerMaxRadius(coordinator, entry, address))
+                entities.append(BermudaScannerAnchorX(coordinator, entry, address))
+                entities.append(BermudaScannerAnchorY(coordinator, entry, address))
+                entities.append(BermudaScannerAnchorZ(coordinator, entry, address))
                 created_scanner_entities.append(address)
 
         if entities:
@@ -414,3 +417,81 @@ class BermudaScannerMaxRadius(BermudaEntity, RestoreNumber):
     def unique_id(self):
         """Uniquely identify this entity."""
         return f"{self._device.unique_id}_max_radius"
+
+
+class _BermudaScannerAnchorCoordinate(BermudaEntity, RestoreNumber):
+    """Base class for scanner anchor coordinate configuration numbers."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = -500
+    _attr_native_max_value = 500
+    _attr_native_step = 0.1
+    _attr_native_unit_of_measurement = UnitOfLength.METERS
+    _attr_mode = NumberMode.BOX
+
+    _coord_attr: str = ""
+    _coord_suffix: str = ""
+    _default_name: str = ""
+
+    def __init__(
+        self,
+        coordinator: BermudaDataUpdateCoordinator,
+        entry: BermudaConfigEntry,
+        address: str,
+    ) -> None:
+        """Initialise the scanner anchor coordinate entity."""
+        self.restored_data: NumberExtraStoredData | None = None
+        super().__init__(coordinator, entry, address)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore values from HA storage on startup."""
+        await super().async_added_to_hass()
+        self.restored_data = await self.async_get_last_number_data()
+        if self.restored_data is not None and self.restored_data.native_value is not None:
+            setattr(self.coordinator.devices[self.address], self._coord_attr, self.restored_data.native_value)
+
+    @property
+    def native_value(self) -> float | None:
+        """Return value of number."""
+        return getattr(self.coordinator.devices[self.address], self._coord_attr, None)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set value."""
+        setattr(self.coordinator.devices[self.address], self._coord_attr, value)
+        self.async_write_ha_state()
+
+    @property
+    def unique_id(self):
+        """Uniquely identify this entity."""
+        return f"{self._device.unique_id}_{self._coord_suffix}"
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return self._default_name
+
+
+class BermudaScannerAnchorX(_BermudaScannerAnchorCoordinate):
+    """Anchor X coordinate configuration for a scanner device."""
+
+    _coord_attr = "anchor_x_m"
+    _coord_suffix = "anchor_x_m"
+    _default_name = "Anchor X"
+
+
+class BermudaScannerAnchorY(_BermudaScannerAnchorCoordinate):
+    """Anchor Y coordinate configuration for a scanner device."""
+
+    _coord_attr = "anchor_y_m"
+    _coord_suffix = "anchor_y_m"
+    _default_name = "Anchor Y"
+
+
+class BermudaScannerAnchorZ(_BermudaScannerAnchorCoordinate):
+    """Anchor Z coordinate configuration for a scanner device."""
+
+    _coord_attr = "anchor_z_m"
+    _coord_suffix = "anchor_z_m"
+    _default_name = "Anchor Z"
