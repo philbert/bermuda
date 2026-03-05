@@ -31,6 +31,7 @@ ICON_DEFAULT_AREA: Final = "mdi:land-plots-marker"
 ICON_DEFAULT_FLOOR: Final = "mdi:selection-marker"  # "mdi:floor-plan"
 # Issue/repair translation keys. If you change these you MUST also update the key in the translations/xx.json files.
 REPAIR_SCANNER_WITHOUT_AREA = "scanner_without_area"
+REPAIR_TRILAT_WITHOUT_ANCHORS = "trilat_without_anchors"
 
 # Device classes
 BINARY_SENSOR_DEVICE_CLASS = "connectivity"
@@ -262,6 +263,8 @@ DOCS[CONF_REF_POWER] = "Default RSSI for signal at 1 metre."
 CONF_SAVE_AND_CLOSE = "save_and_close"
 CONF_SCANNER_INFO = "scanner_info"
 CONF_RSSI_OFFSETS = "rssi_offsets"
+CONF_TRILAT_ENABLED, DEFAULT_TRILAT_ENABLED = "trilat_enabled", False
+CONF_TRILAT_CROSS_FLOOR_PENALTY_DB, DEFAULT_TRILAT_CROSS_FLOOR_PENALTY_DB = "trilat_cross_floor_penalty_db", 8.0
 
 CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL = "update_interval", 10
 DOCS[CONF_UPDATE_INTERVAL] = (
@@ -280,6 +283,11 @@ MOBILITY_MOVING: Final = "moving"
 MOBILITY_STATIONARY: Final = "stationary"
 MOBILITY_OPTIONS: Final = [MOBILITY_STATIONARY, MOBILITY_MOVING]
 DEFAULT_MOBILITY_TYPE: Final = MOBILITY_MOVING
+
+ANCHOR_ENABLED: Final = "enabled"
+ANCHOR_DISABLED: Final = "disabled"
+ANCHOR_ENABLED_OPTIONS: Final = [ANCHOR_DISABLED, ANCHOR_ENABLED]
+DEFAULT_ANCHOR_ENABLED: Final = ANCHOR_DISABLED
 
 # Explicit area outcome when coverage/evidence is weak or ambiguous.
 AREA_NAME_UNKNOWN: Final = "Unknown"

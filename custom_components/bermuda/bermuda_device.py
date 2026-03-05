@@ -146,6 +146,20 @@ class BermudaDevice(dict):
         self.diag_area_switch: str | None = None  # saves output of AreaTests
         self.mobility_type: str = DEFAULT_MOBILITY_TYPE
         self.area_is_unknown: bool = False
+        # Per-scanner trilateration anchor settings (only meaningful for scanners).
+        self.anchor_enabled: bool = False
+        self.anchor_x_m: float | None = None
+        self.anchor_y_m: float | None = None
+        self.anchor_z_m: float | None = None
+        # Per-device trilateration diagnostics.
+        self.trilat_x_m: float | None = None
+        self.trilat_y_m: float | None = None
+        self.trilat_floor_id: str | None = None
+        self.trilat_floor_name: str | None = None
+        self.trilat_anchor_count: int = 0
+        self.trilat_status: str = "unknown"
+        self.trilat_reason: str = "stale_inputs"
+        self.trilat_residual_m: float | None = None
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
         ] = {}  # str will be a scanner address OR a deviceaddress__scanneraddress
@@ -661,6 +675,42 @@ class BermudaDevice(dict):
             self.mobility_type = str(mobility_type)
         else:
             self.mobility_type = DEFAULT_MOBILITY_TYPE
+
+    def set_trilat_unknown(
+        self,
+        reason: str,
+        floor_id: str | None = None,
+        floor_name: str | None = None,
+        anchor_count: int = 0,
+    ) -> None:
+        """Store trilat Unknown outcome on this device."""
+        self.trilat_x_m = None
+        self.trilat_y_m = None
+        self.trilat_floor_id = floor_id
+        self.trilat_floor_name = floor_name
+        self.trilat_anchor_count = anchor_count
+        self.trilat_status = "unknown"
+        self.trilat_reason = reason
+        self.trilat_residual_m = None
+
+    def set_trilat_solution(
+        self,
+        x_m: float,
+        y_m: float,
+        floor_id: str | None,
+        floor_name: str | None,
+        anchor_count: int,
+        residual_m: float,
+    ) -> None:
+        """Store trilat solved outcome on this device."""
+        self.trilat_x_m = x_m
+        self.trilat_y_m = y_m
+        self.trilat_floor_id = floor_id
+        self.trilat_floor_name = floor_name
+        self.trilat_anchor_count = anchor_count
+        self.trilat_status = "ok"
+        self.trilat_reason = "ok"
+        self.trilat_residual_m = residual_m
 
     def apply_scanner_selection(self, bermuda_advert: BermudaAdvert | None, force_unknown: bool = False):
         """

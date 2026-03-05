@@ -95,6 +95,7 @@ class BermudaAdvert(dict):
         self.tx_power: float | None = None
         self.rssi_distance: float | None = None
         self.rssi_distance_raw: float
+        self.trilat_range_ewma_m: float | None = None
         self.stale_update_count = 0  # How many times we did an update but no new stamps were found.
         self.hist_stamp: list[float] = []
         self.hist_rssi: list[int] = []
@@ -529,6 +530,7 @@ class BermudaAdvert(dict):
                 self.hist_rssi_filtered.clear()
             if len(self.hist_rssi_adjusted) > 0:
                 self.hist_rssi_adjusted.clear()
+            self.trilat_range_ewma_m = None
 
         else:
             # Add the current reading (whether new or old) to
