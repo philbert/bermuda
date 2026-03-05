@@ -98,6 +98,11 @@
 ## 10. Unknown behavior and startup semantics
 - On HA startup/restart, trilat sensors start as Unknown until enough fresh anchors arrive.
 - No restoration of stale last coordinates.
+- `stale_inputs` is a device-level freshness failure, distinct from anchor insufficiency:
+  - trigger when no valid advert update for the tracked device has arrived from any scanner
+    within `DISTANCE_TIMEOUT`.
+- `insufficient_anchors` is used only when device data is fresh but fewer than
+  `_TRILAT_MIN_ANCHORS` eligible same-floor anchors remain after filtering.
 - Unknown reasons are diagnostic and explicit:
   - `insufficient_anchors`
   - `ambiguous_floor` (as defined in Section 7)
@@ -137,6 +142,7 @@
   - trilat EWMA uses raw range and resets on floor change.
   - solve skip when all deltas `< 0.2 m`; solve runs when threshold crossed.
   - residual gate triggers Unknown correctly.
+  - `stale_inputs` triggers when no scanner advert update arrives within `DISTANCE_TIMEOUT`.
   - startup state Unknown until valid anchors available.
 - Coordinator integration tests:
   - trilat state isolation from area hysteresis state.
