@@ -60,6 +60,7 @@ from .bermuda_irk import BermudaIrkManager
 from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
+    _LOGGER_TARGET_SPAM_LESS,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     AREA_NAME_UNKNOWN,
     AREA_MAX_AD_AGE,
@@ -1517,7 +1518,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             challenger_max_radius = self.get_scanner_max_radius(challenger.scanner_address)
             if challenger.rssi_distance is None or challenger.rssi_distance > challenger_max_radius or challenger.area_id is None:
                 if _debug_this_device:
-                    _LOGGER.debug(
+                    _LOGGER_TARGET_SPAM_LESS.debug(
+                        f"area_rejected:{device.address}:{challenger.scanner_address}",
                         "Area: %s challenger %s REJECTED: distance=%.2f, max_radius=%.2f, area=%s",
                         device.name,
                         challenger.name,
@@ -1545,6 +1547,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         contenders.sort(key=lambda c: (-c.score, c.advert.rssi_distance or 999.0))
         best = contenders[0] if contenders else None
         second = contenders[1] if len(contenders) > 1 else None
+        best_area_id = best.advert.area_id if best is not None else None
+        second_area_id = second.advert.area_id if second is not None else None
+        contenders_same_area = best is not None and second is not None and best_area_id == second_area_id
         # dominant_history is appended at each exit point below with the resolved
         # outcome (chosen scanner address or AREA_NAME_UNKNOWN) rather than here
         # with the pre-gating best, so Unknown cycles never inflate any scanner's
@@ -1571,16 +1576,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             unknown_reason = f"weak_rssi({best.rssi_filtered:.1f}dBm)"
         elif second is not None:
             ambiguous_ratio = best.score / max(second.score, 1e-9)
-            if ambiguous_ratio < policy.ambiguity_ratio:
-                if state.ambiguous_since <= 0:
-                    state.ambiguous_since = nowstamp
-                elif nowstamp - state.ambiguous_since >= policy.ambiguity_hold_seconds:
-                    unknown_reason = f"ambiguous_ratio({ambiguous_ratio:.2f})"
-            else:
+            if contenders_same_area:
+                # Two top scanners in the same area are not area-ambiguous.
                 state.ambiguous_since = 0.0
+            else:
+                if ambiguous_ratio < policy.ambiguity_ratio:
+                    if state.ambiguous_since <= 0:
+                        state.ambiguous_since = nowstamp
+                    elif nowstamp - state.ambiguous_since >= policy.ambiguity_hold_seconds:
+                        unknown_reason = f"ambiguous_ratio({ambiguous_ratio:.2f})"
+                else:
+                    state.ambiguous_since = 0.0
 
             if (
                 unknown_reason is None
+                and not contenders_same_area
                 and best.advert.rssi_distance is not None
                 and best.advert.rssi_distance > best.max_radius * 0.92
                 and ambiguous_ratio < (policy.ambiguity_ratio + 0.1)
@@ -1595,29 +1605,38 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             # When second is None the best scanner is unambiguously the closest visible scanner,
             # which is actually strong evidence — requiring a non-existent competitor's score
             # would permanently trap single-scanner environments in Unknown state.
-            if second is not None and (best.score / max(second.score, 1e-9)) < policy.unknown_exit_ratio:
+            if best_area_id is not None and best_area_id == device.area_last_seen_id:
+                # Reacquiring the last known area should clear Unknown quickly.
+                pass
+            elif (
+                second is not None
+                and best_area_id != second_area_id
+                and (best.score / max(second.score, 1e-9)) < policy.unknown_exit_ratio
+            ):
                 unknown_reason = "hold_unknown_until_clear"
 
         if unknown_reason is not None:
             if state.unknown_since <= 0:
                 state.unknown_since = nowstamp
             unknown_age = nowstamp - state.unknown_since
+            incumbent_for_hold = incumbent.advert if incumbent is not None else incumbent_advert
 
             # Delay Unknown transitions to avoid very short blips.
-            if incumbent is not None and unknown_age < policy.unknown_enter_seconds:
+            if incumbent_for_hold is not None and unknown_age < policy.unknown_enter_seconds:
                 tests.reason = f"HOLD incumbent pending_unknown({unknown_reason}) age={unknown_age:.1f}s"
                 state.challenger_scanner = None
                 state.challenger_since = 0.0
                 if _debug_this_device:
-                    _LOGGER.debug(
+                    _LOGGER_TARGET_SPAM_LESS.debug(
+                        f"area_pending_unknown:{device.address}:{unknown_reason}",
                         "Area: %s hold incumbent %s while unknown pending (%s, age=%.1fs)",
                         device.name,
-                        incumbent.advert.name,
+                        incumbent_for_hold.name,
                         unknown_reason,
                         unknown_age,
                     )
-                state.dominant_history.append(incumbent.advert.scanner_address)
-                device.apply_scanner_selection(incumbent.advert)
+                state.dominant_history.append(incumbent_for_hold.scanner_address)
+                device.apply_scanner_selection(incumbent_for_hold)
                 return
 
             state.challenger_scanner = None
@@ -1625,7 +1644,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             tests.reason = f"UNKNOWN - {unknown_reason}"
             device.diag_area_switch = tests.sensortext()
             if _debug_this_device:
-                _LOGGER.debug(
+                _LOGGER_TARGET_SPAM_LESS.debug(
+                    f"area_unknown:{device.address}:{unknown_reason}",
                     "Area: %s -> Unknown (%s), best=%s second=%s",
                     device.name,
                     unknown_reason,
@@ -1737,7 +1757,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         if _debug_this_device:
-            _LOGGER.debug(
+            _LOGGER_TARGET_SPAM_LESS.debug(
+                f"area_chosen:{device.address}:{chosen.advert.scanner_address}:{tests.reason}",
                 "Area: %s chose %s (%s) score=%.3f rssi_f=%.1f disp=%.2f reason=%s",
                 device.name,
                 chosen.advert.name,

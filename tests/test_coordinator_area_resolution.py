@@ -34,6 +34,8 @@ class _DummyDevice:
         self.adverts = {}
         self.area_advert = None
         self.area_name = None
+        self.area_last_seen = None
+        self.area_last_seen_id = None
         self.area_is_unknown = False
         self.diag_area_switch = None
         self.applied: list[tuple[object | None, bool]] = []
@@ -49,6 +51,8 @@ class _DummyDevice:
             self.area_name = "Unknown"
         elif advert is not None:
             self.area_name = advert.area_name
+            self.area_last_seen = advert.area_name
+            self.area_last_seen_id = advert.area_id
         else:
             self.area_name = None
 
@@ -112,6 +116,47 @@ def test_unknown_entry_is_delayed_while_incumbent_exists():
     # First weak detection should keep incumbent instead of flapping to Unknown immediately.
     assert device.applied[-1][0] is incumbent
     assert device.applied[-1][1] is False
+
+
+def test_no_valid_contender_holds_stale_incumbent_during_grace():
+    """No-contender gaps should hold prior area for the unknown grace window."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-gap", mobility_type="moving")
+
+    incumbent = _make_advert("scanner_a", "Garage", -80.0, 3.0)
+    device.area_advert = incumbent
+    device.area_name = "Garage"
+    device.area_last_seen = "Garage"
+    device.area_last_seen_id = incumbent.area_id
+    device.adverts = {}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.applied[-1][0] is incumbent
+    assert device.applied[-1][1] is False
+
+
+def test_unknown_exit_does_not_require_ratio_for_same_area_scanners():
+    """Unknown should clear when top contenders are from the same area."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-same-area", mobility_type="stationary")
+
+    top = _make_advert("scanner_g1", "Garage", -88.5, 4.4)
+    second = _make_advert("scanner_g2", "Garage", -89.2, 4.6)
+    device.area_is_unknown = True
+    device.area_name = "Unknown"
+    device.area_last_seen = "Garage"
+    device.area_last_seen_id = top.area_id
+    device.adverts = {
+        ("dev-same-area", "scanner_g1"): top,
+        ("dev-same-area", "scanner_g2"): second,
+    }
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.applied[-1][0] is top
+    assert device.applied[-1][1] is False
+    assert device.area_name == "Garage"
 
 
 def test_unknown_cycles_record_unknown_in_dominant_history():

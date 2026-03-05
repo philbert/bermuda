@@ -21,6 +21,8 @@ from bluetooth_data_tools import monotonic_time_coarse
 
 from .const import (
     _LOGGER,
+    _LOGGER_TARGET,
+    _LOGGER_TARGET_SPAM_LESS,
     CONF_ATTENUATION,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -337,7 +339,7 @@ class BermudaAdvert(dict):
             threshold = max(outlier_db, robust_sigma * 3.0)
             if abs(sample - med) > threshold:
                 if self._debug_this_device():
-                    _LOGGER.debug(
+                    _LOGGER_TARGET.debug(
                         "RSSI outlier clamped for %s->%s: raw=%.1f median=%.1f threshold=%.1f",
                         self._device.prefname,
                         self.scanner_device.name,
@@ -392,7 +394,8 @@ class BermudaAdvert(dict):
 
         distance = rssi_to_metres(filtered_rssi, ref_power, self.conf_attenuation)
         if self._debug_this_device():
-            _LOGGER.debug(
+            _LOGGER_TARGET_SPAM_LESS.debug(
+                f"distance_calc:{self.device_address}:{self.scanner_address}",
                 (
                     "Distance calc for %s->%s: raw_rssi=%s, offset=%s, adjusted=%.2f, filtered=%.2f,"
                     " dispersion=%.2f, ref_power=%s, attenuation=%s, distance=%.2fm"

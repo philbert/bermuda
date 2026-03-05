@@ -262,6 +262,8 @@ DEFAULT_NAME = DOMAIN
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 _LOGGER_SPAM_LESS = BermudaLogSpamLess(_LOGGER, LOGSPAM_INTERVAL)
+_LOGGER_TARGET: logging.Logger = logging.getLogger(f"{__package__}.target")
+_LOGGER_TARGET_SPAM_LESS = BermudaLogSpamLess(_LOGGER_TARGET, LOGSPAM_INTERVAL)
 
 
 STARTUP_MESSAGE = f"""
