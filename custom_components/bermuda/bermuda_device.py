@@ -740,7 +740,6 @@ class BermudaDevice(dict):
             self.area_last_seen_id = self.area_id
             self.area_last_seen_icon = self.area_icon
         else:
-            self.area = None
             self.area_id = None
             self.area_name = AREA_NAME_UNKNOWN if force_unknown else None
             self.area_icon = ICON_DEFAULT_AREA

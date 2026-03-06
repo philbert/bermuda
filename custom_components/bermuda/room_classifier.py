@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     from homeassistant.helpers.area_registry import AreaRegistry
 
     from .calibration import BermudaCalibrationManager
+
+_LOGGER = logging.getLogger(__name__)
 
 
 MIN_ROOM_SAMPLE_COUNT = 3
@@ -69,6 +72,12 @@ class BermudaRoomClassifier:
                 continue
             area = self._area_registry.async_get_area(area_id)
             if area is None:
+                _LOGGER.warning(
+                    "Room classifier: area %s referenced by calibration samples no longer exists; "
+                    "those samples will not contribute to room classification until the area is restored "
+                    "or the samples are deleted",
+                    area_id,
+                )
                 continue
             centroid_x_m = sum(pos[0] for pos in positions) / len(positions)
             centroid_y_m = sum(pos[1] for pos in positions) / len(positions)

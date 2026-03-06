@@ -61,7 +61,13 @@ class BermudaRangingModel:
         self._models: dict[str, _LayoutModel] = {}
 
     async def async_rebuild(self) -> None:
-        """Rebuild all layout models from saved calibration samples."""
+        """Rebuild all layout models from saved calibration samples.
+
+        NOTE: _fit_layout calls numpy.linalg.lstsq synchronously. For typical
+        home deployments (tens of samples) this is negligible. If sample counts
+        grow large enough to block the event loop, move _fit_layout into
+        hass.async_add_executor_job.
+        """
         grouped_rows: dict[str, list[_TrainingRow]] = {}
         for sample in self._calibration.samples():
             if sample.get("quality", {}).get("status") == "rejected":
@@ -156,6 +162,11 @@ class BermudaRangingModel:
 
         scanner_terms = sorted(addr for addr, count in scanner_counts.items() if count >= MIN_SCANNER_BIAS_ROWS)
         device_terms = sorted(dev for dev, count in device_counts.items() if count >= MIN_DEVICE_BIAS_ROWS)
+        # Dummy-variable encoding: scanner_terms[0] and device_terms[0] are the
+        # reference levels (bias fixed at 0.0). All others get a coefficient
+        # relative to that reference. The reference is chosen by alphabetical
+        # sort, which is arbitrary — its idiosyncrasies are absorbed into the
+        # global intercept rather than any named scanner bias term.
         scanner_columns = scanner_terms[1:]
         device_columns = device_terms[1:]
 
