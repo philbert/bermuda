@@ -169,13 +169,34 @@ Recommended implementation shape:
 
 - add `custom_components/bermuda/ranging_model.py`,
 - load and fit from `BermudaCalibrationStore`,
+- fit the initial model with `numpy.linalg.lstsq` against raw `(log10(distance), rssi_median)` rows,
 - expose one runtime method such as:
   - `estimate_range(scanner_address, device_address, filtered_rssi) -> {range_m, sigma_m, source}`
+
+The intended first model is still simple:
+
+```text
+RSSI = A - 10 * n * log10(d) + scanner_bias
+```
+
+That keeps Phase 2 linear in the unknowns and avoids over-engineering the first implementation.
 
 Important detail:
 
 - models must be keyed by `anchor_layout_hash`,
 - because once anchors move, old geometric truth is no longer valid.
+
+Minimum fitting thresholds should be explicit constants in `ranging_model.py`:
+
+- do not fit the global model until there are at least 5 distinct `(distance, RSSI)` training pairs,
+- do not fit a per-scanner bias term unless that scanner appears in at least 3 samples,
+- scanners below the threshold should keep zero bias until enough data exists.
+
+Model rebuild triggers should also be explicit:
+
+- build once at coordinator startup,
+- rebuild whenever a sample is added or deleted,
+- rebuild whenever the active `anchor_layout_hash` changes.
 
 Transitional fallback behavior must be explicit:
 
@@ -268,6 +289,14 @@ That becomes the basis for:
 - it gates anchors in `_refresh_trilateration_for_device()`,
 - both call paths and both test suites need to move to the new uncertainty gates together.
 
+For Phase 3, uncertainty should be used first as a binary gate rather than a weighted solve input:
+
+- include an anchor only when `sigma_m` is below a threshold,
+- exclude it otherwise,
+- defer any solver change that adds per-anchor weights to a later phase.
+
+That keeps Phase 3 compatible with the current `AnchorMeasurement` and solver signatures.
+
 ## Using calibration samples to improve mobility mode
 
 The existing mobility mode is manual. The sample set can already define what stationary noise looks like, because every calibration sample is explicitly taken from a fixed position.
@@ -333,7 +362,8 @@ Notes:
 1. Implement a calibration-sample reader that converts saved samples into training rows.
 2. Fit the first global-plus-scanner-bias model.
 3. Expose a coordinator-owned ranging-model service object.
-4. Add tests with synthetic anchors and synthetic samples to verify learned ranges are closer to truth than the fixed formula.
+4. Wire rebuild triggers from calibration sample add/delete operations and anchor-layout changes.
+5. Add tests with synthetic anchors and synthetic samples to verify learned ranges are closer to truth than the fixed formula.
 
 ### Phase 3: switch trilat to the learned model
 
@@ -347,22 +377,24 @@ Notes:
 
 1. Build and cache a `RoomClassifier` from sample-derived room centroids/radii keyed by `anchor_layout_hash`.
 2. Use trilat position as the primary room input.
-3. Apply a dwell gate before committing room transitions so solve jitter does not flap rooms at boundaries.
-4. Use this explicit fallback chain:
+3. Reuse the existing per-device `AreaDecisionState` by adding position-challenger fields there rather than inventing a second parallel state holder.
+4. Apply a dwell gate before committing room transitions so solve jitter does not flap rooms at boundaries.
+5. Use this explicit fallback chain:
    - trilat has a usable solve and the classifier has trained rooms on this floor: use position-based room attribution,
    - trilat has a usable solve but the floor has no trained rooms: fall back to scanner-based area,
    - trilat is `unknown`: fall back to scanner-based area,
    - classifier result exists but misses the margin requirement: return `Unknown`,
    - no samples exist for the current `anchor_layout_hash`: fall back to scanner-based area until the layout is trained.
-5. Add a calibration-samples warning when the current anchor layout has fewer trained rooms than the previous layout, so anchor moves clearly signal recapture work.
-6. Delete the nearest-scanner area winner path only after the fallback cases above are either handled or intentionally retired.
+6. Add a calibration-samples warning when the current anchor layout has fewer trained rooms than the previous layout, so anchor moves clearly signal recapture work.
+7. Delete the nearest-scanner area winner path only after the fallback cases above are either handled or intentionally retired.
 
 ### Phase 5: automatic mobility mode
 
-1. Add inferred mobility features and a short rolling classifier.
-2. Convert mobility control from manual-only to `auto | stationary | moving`.
-3. Tune area/trilat hysteresis against effective mobility, not the user’s static choice.
-4. Add regression tests for:
+1. Add a runtime `mobility_baseline` artifact derived from calibration samples, either in a new `mobility_baseline.py` or as a dedicated class alongside the ranging model and room classifier.
+2. Add inferred mobility features and a short rolling classifier.
+3. Convert mobility control from manual-only to `auto | stationary | moving`.
+4. Tune area/trilat hysteresis against effective mobility, not the user’s static choice.
+5. Add regression tests for:
    - stable stationary sample windows,
    - genuine motion,
    - boundary jitter,
@@ -380,6 +412,14 @@ Notes:
    - sample-based room attribution,
    - inferred mobility.
 
+Phase 6 should ship as one release or one PR:
+
+- removing entities and constants,
+- config-entry migration,
+- and stored-option cleanup
+
+should land together so manually calibrated users see one intentional breaking change rather than a staggered partial removal.
+
 ## Risks to manage
 
 - Sparse samples can produce overconfident room labels. The classifier must prefer `Unknown` over guessing.
@@ -388,6 +428,8 @@ Notes:
 - Some devices will have few or no per-device samples. The model must back off cleanly to global or scanner-level parameters.
 - Full deletion of `ref_power` should happen only after the learned model is proven to cover low-sample devices acceptably.
 - Rooms with no calibration samples on the current floor are untrained. The system should fall back to scanner-based area rather than punish partial sample coverage.
+- Manually calibrated users will lose `attenuation`, `rssi_offset`, and `ref_power` as durable user settings in Phase 6. That is a deliberate breaking change and should be called out in release notes.
+- Users who want the new model to reflect their environment should capture calibration samples before or during the Phase 3 to Phase 6 transition.
 
 ## Bottom line
 
