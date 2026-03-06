@@ -355,8 +355,7 @@ class BermudaCalibrationManager:
                 "buckets_1s": [
                     {
                         "offset_s": offset_s,
-                        "count": len(values),
-                        "rssi_median": round(statistics.median(values), 3),
+                        "rssi": round(statistics.median(values), 3),
                     }
                     for offset_s, values in sorted(accumulator.buckets.items())
                 ],
