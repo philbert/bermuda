@@ -147,7 +147,7 @@ class BermudaDevice(dict):
         self.mobility_type: str = DEFAULT_MOBILITY_TYPE
         self.area_is_unknown: bool = False
         # Per-scanner trilateration anchor settings (only meaningful for scanners).
-        self.anchor_enabled: bool = False
+        self.anchor_enabled: bool = True
         self.anchor_x_m: float | None = None
         self.anchor_y_m: float | None = None
         self.anchor_z_m: float | None = None

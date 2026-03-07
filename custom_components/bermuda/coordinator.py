@@ -502,7 +502,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_scanner_anchor_enabled(self, scanner_address: str) -> bool:
         """Return whether scanner should be used as a trilat anchor."""
         if scanner_address in self.devices:
-            return bool(getattr(self.devices[scanner_address], "anchor_enabled", False))
+            return bool(getattr(self.devices[scanner_address], "anchor_enabled", True))
         return False
 
     def get_scanner_anchor_x(self, scanner_address: str) -> float | None:
@@ -525,10 +525,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def trilat_enabled(self) -> bool:
         """Return true if trilateration is enabled."""
-        if self.options.get(CONF_TRILAT_ENABLED, DEFAULT_TRILAT_ENABLED):
-            return True
-        # Also allow implicit enable when any scanner anchor has been enabled.
-        return any(getattr(device, "anchor_enabled", False) for device in self._scanners)
+        return bool(self.options.get(CONF_TRILAT_ENABLED, DEFAULT_TRILAT_ENABLED))
 
     def trilat_cross_floor_penalty_db(self) -> float:
         """Return configured cross-floor RSSI penalty for floor evidence."""
