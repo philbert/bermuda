@@ -74,6 +74,22 @@ Expected user-facing result:
 - host entities from Shelly / ESPHome remain on their own host device page
 - no `_2` duplicates, no wrong-device attachments
 
+## Architectural Decision
+
+Bermuda must own an independent scanner/proxy device for every scanner.
+
+That means:
+- no scanner-owned Bermuda entity may publish host `connections`
+- no scanner-owned Bermuda entity may merge into the Bluetooth integration device as a workaround
+- no scanner-owned Bermuda entity may merge into the Shelly / ESPHome / ESPresense host device
+
+This includes `Timestamp Sync`.
+
+Even if some current cases appear to work by merging with the Bluetooth integration device, that behavior is accidental and conflicts with the long-term architecture. The correct model is:
+- one Bermuda-owned proxy device
+- optional later linkage to the host device via `via_device`
+- zero shared `connections` on scanner-owned Bermuda entities
+
 ## Implementation Plan
 
 ### Phase 1: Define a canonical Bermuda scanner identity
@@ -110,13 +126,14 @@ This base class should provide:
 - a scanner-specific `device_info`
 
 Do not let scanner entities inherit scanner `device_info` from generic `BermudaEntity`.
+Do not let any scanner entity implement ad hoc identity logic outside this base class.
 
 ### Phase 3: Make Bermuda own the proxy device explicitly
 
 Change scanner `device_info` so Bermuda creates and owns its own scanner device entry using:
 - `identifiers = {(DOMAIN, f"scanner:{scanner_entity_key}")}`
 
-Do not include host `connections` on Bermuda scanner device_info.
+Do not include any `connections` on Bermuda scanner device_info.
 
 This is the most important rule in the whole fix.
 
@@ -125,9 +142,11 @@ If `connections` include the Shelly / ESPHome / Bluetooth MACs, HA will keep mer
 Instead:
 - keep scanner metadata on the Bermuda-owned proxy device
 - use copied fields like name/model/manufacturer/sw_version when available
-- optionally use `via_device` to link to the host integration device
+- do not add `via_device` yet in this first stabilization pass
 
 ### Phase 4: Represent host linkage explicitly
+
+This phase should happen only after Phases 1-3 are working correctly on real installs.
 
 If a host device is known, link the Bermuda proxy device to it via `via_device`, not by shared connections.
 
@@ -144,6 +163,8 @@ If no host device is known:
 Important:
 - `via_device` is only linkage metadata
 - it must not change the Bermuda scanner device’s identity
+- `via_device` must never point back to the Bermuda proxy device itself
+- if host linkage is ambiguous, omit `via_device` rather than guessing
 
 ### Phase 5: Standardize all scanner entity unique IDs
 
@@ -152,6 +173,8 @@ Convert every scanner-owned Bermuda entity to use the same base:
 - `scanner:{scanner_entity_key}:anchor_y`
 - `scanner:{scanner_entity_key}:anchor_z`
 - `scanner:{scanner_entity_key}:timestamp_sync`
+
+This must apply to every scanner-owned Bermuda entity, not just anchors and timestamp sync.
 
 Per-device-per-scanner entities can continue using:
 - tracked device key + scanner key
@@ -184,12 +207,17 @@ This must include:
 - anchor X/Y/Z entities created with old mutable IDs
 - timestamp sync entities created with Wi-Fi-keyed or mutable IDs
 - duplicate stale registry entries left behind by prior experiments
+- Bermuda device-registry entries that accumulated multiple stale identifiers for one scanner
+- corrupted Bermuda device-registry entries with bad or self-referential `via_device`
 
 Migration behavior:
 - compute canonical scanner key for each live scanner
 - compute all known legacy candidate unique IDs for that scanner
 - if a legacy entity exists and canonical one does not, migrate or remove/recreate
 - if both exist, remove the stale legacy one
+- inspect the device registry for Bermuda-owned scanner devices with multiple identifiers that refer to the same scanner and collapse them to the one canonical identifier
+- remove stale Bermuda scanner identifiers that match old Wi-Fi/BLE/mutable-key schemes
+- if a Bermuda proxy device has `via_device` pointing to itself or to another Bermuda proxy device incorrectly, clear it
 
 This cleanup should run during setup before new scanner entities are added.
 
@@ -205,6 +233,8 @@ It should not require every optional metadata field to exist.
 
 The key point is:
 - no scanner entity should be created before the canonical scanner identity is known
+- do not gate scanner creation on `address_wifi_mac`
+- replace the current Wi-Fi-MAC-specific guard with a canonical-key readiness guard
 
 ### Phase 9: Add explicit diagnostics for scanner identity
 
@@ -264,6 +294,20 @@ Expected result:
 - one surviving canonical entity
 - attached to the canonical Bermuda proxy device
 
+### Device-registry migration tests
+
+Add tests for already-corrupted Bermuda scanner devices:
+- Bermuda device with multiple identifiers for the same physical scanner
+- Bermuda device with stale Wi-Fi-keyed and BLE-keyed identifiers together
+- Bermuda device with self-referential `via_device`
+- Bermuda device merged incorrectly with host-facing assumptions in the migration input
+
+Expected result:
+- one canonical Bermuda proxy device remains
+- stale Bermuda identifiers are removed
+- no self-referential `via_device`
+- scanner-owned entities attach to the canonical Bermuda proxy device after reload
+
 ## Rollout Strategy
 
 ### Step 1
@@ -272,13 +316,21 @@ Implement the canonical scanner identity model and the new `BermudaScannerEntity
 
 ### Step 2
 
-Move anchor X/Y/Z and timestamp sync onto that base class.
+Move anchor X/Y/Z and timestamp sync onto that base class and remove scanner `connections` from Bermuda scanner `device_info`.
 
 ### Step 3
 
-Add migration/cleanup for stale legacy scanner entities.
+Add migration/cleanup for stale legacy scanner entities and corrupted Bermuda scanner device-registry entries.
 
 ### Step 4
+
+Validate that scanner entities land on exactly one Bermuda proxy device on mixed real hardware before adding `via_device`.
+
+### Step 5
+
+If scanner ownership is now stable, add optional `via_device` linkage to host devices.
+
+### Step 6
 
 Verify on a real installation with mixed:
 - Shelly
@@ -293,10 +345,22 @@ Check both:
 
 This fix should not:
 - merge Bermuda scanner entities into host integration devices
+- merge Bermuda scanner entities into the Bluetooth integration device
 - keep trying to “guess right” using different MACs per entity class
 - special-case timestamp sync separately from the rest of the scanner model
 
 This is a scanner identity architecture fix, not a one-sensor fix.
+
+## Acceptance Criteria
+
+The fix is not complete until all of these are true:
+- every scanner has exactly one Bermuda-owned proxy device
+- scanner-owned Bermuda entities never appear on Shelly / ESPHome / ESPresense host device pages
+- scanner-owned Bermuda entities never appear on the Bluetooth integration device page
+- no scanner-owned Bermuda entity uses mutable scanner `unique_id` as its identity source
+- no duplicate Bermuda proxy devices are created for one scanner after reload
+- no duplicate scanner-owned entities are created for one scanner after reload
+- discovery order does not affect which HA device owns Bermuda scanner entities
 
 ## Recommendation
 
