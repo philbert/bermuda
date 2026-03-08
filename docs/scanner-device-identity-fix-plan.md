@@ -206,6 +206,7 @@ Implement explicit cleanup/migration for old scanner entities.
 This must include:
 - anchor X/Y/Z entities created with old mutable IDs
 - timestamp sync entities created with Wi-Fi-keyed or mutable IDs
+- timestamp sync entities created with the current BLE-MAC-keyed scheme
 - duplicate stale registry entries left behind by prior experiments
 - Bermuda device-registry entries that accumulated multiple stale identifiers for one scanner
 - corrupted Bermuda device-registry entries with bad or self-referential `via_device`
@@ -215,6 +216,7 @@ Migration behavior:
 - compute all known legacy candidate unique IDs for that scanner
 - if a legacy entity exists and canonical one does not, migrate or remove/recreate
 - if both exist, remove the stale legacy one
+- treat legacy Bermuda scanner device identifiers of the form `(bermuda, {ble_mac})` as stale scanner-device aliases that must be collapsed into `(bermuda, scanner:{scanner_entity_key})`
 - inspect the device registry for Bermuda-owned scanner devices with multiple identifiers that refer to the same scanner and collapse them to the one canonical identifier
 - remove stale Bermuda scanner identifiers that match old Wi-Fi/BLE/mutable-key schemes
 - if a Bermuda proxy device has `via_device` pointing to itself or to another Bermuda proxy device incorrectly, clear it
@@ -288,6 +290,7 @@ Add tests for old registry entries:
 - old mutable-ID anchor entities
 - old Wi-Fi-keyed timestamp sync
 - old BLE-keyed timestamp sync
+- old Bermuda scanner device identifiers using bare BLE MAC without the `scanner:` prefix
 - wrong-device-attached stale entries
 
 Expected result:
