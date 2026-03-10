@@ -864,3 +864,59 @@ def test_trilat_state_is_isolated_from_area_state():
 
     assert len(coordinator._area_decision_state) == 0, "trilat must not touch area state"
     assert device.address in coordinator._trilat_decision_state
+
+
+def test_trilat_solve_prior_predicts_same_floor_state():
+    """Solve prior should extrapolate the last filtered state on the current floor."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-prior-state", mobility_type="stationary")
+    state = coordinator._get_trilat_decision_state(device)
+    state.floor_id = "f1"
+    state.last_solution_xy = (4.0, 5.0)
+    state.last_solution_z = 2.0
+    state.velocity_x_mps = 1.0
+    state.velocity_y_mps = -0.5
+    state.velocity_z_mps = 0.25
+    state.last_filter_stamp = 100.0
+    state.last_residual_m = 0.6
+    state.last_mean_sigma_m = 1.2
+    state.last_status = "ok"
+
+    prior = coordinator._build_trilat_solve_prior(
+        state,
+        nowstamp=102.0,
+        mobility_type=device.get_mobility_type(),
+        solver_dimension="3d",
+        selected_floor_id="f1",
+        mean_sigma_m=1.0,
+        mean_anchor_range_delta_m=0.5,
+    )
+
+    assert prior is not None
+    assert abs(prior.x_m - 6.0) < 0.01
+    assert abs(prior.y_m - 4.0) < 0.01
+    assert abs(prior.z_m - 2.5) < 0.01
+    assert prior.sigma_x_m > 0.0
+    assert prior.sigma_z_m > 0.0
+
+
+def test_trilat_solve_prior_skips_cross_floor_state():
+    """Solve prior should not be applied across floor changes."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-prior-cross-floor")
+    state = coordinator._get_trilat_decision_state(device)
+    state.floor_id = "f1"
+    state.last_solution_xy = (1.0, 1.0)
+    state.last_filter_stamp = 50.0
+
+    prior = coordinator._build_trilat_solve_prior(
+        state,
+        nowstamp=52.0,
+        mobility_type=device.get_mobility_type(),
+        solver_dimension="2d",
+        selected_floor_id="f2",
+        mean_sigma_m=1.0,
+        mean_anchor_range_delta_m=0.5,
+    )
+
+    assert prior is None
