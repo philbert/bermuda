@@ -460,15 +460,38 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         device: BermudaDevice,
         filtered_rssi: float | None,
         live_rssi_dispersion: float | None = None,
+        live_packet_count: int | None = None,
     ):
         """Estimate range for one advert using the sample-derived model."""
+        scanner = self.devices.get(scanner_address)
+        timestamp_health_penalty = self._timestamp_health_penalty(scanner)
         return self.ranging_model.estimate_range(
             layout_hash=self.current_anchor_layout_hash(),
             scanner_address=scanner_address,
             device_id=self.get_registry_id_for_device(device),
             filtered_rssi=filtered_rssi,
             live_rssi_dispersion=live_rssi_dispersion,
+            live_packet_count=live_packet_count,
+            timestamp_health_penalty=timestamp_health_penalty,
         )
+
+    @staticmethod
+    def _timestamp_health_penalty(scanner: BermudaDevice | None) -> float:
+        """Map scanner timestamp health into an uncertainty inflation factor."""
+        if scanner is None or not getattr(scanner, "is_scanner", False):
+            return 0.0
+        sync_state = scanner.timestamp_sync_diagnostics().get("state")
+        if sync_state in {"local", "synchronized"}:
+            return 0.0
+        if sync_state == "recovered":
+            return 0.08
+        if sync_state == "drifting":
+            return 0.25
+        if sync_state == "unstable":
+            return 0.75
+        if sync_state == "broken":
+            return 1.25
+        return 0.0
 
     def get_scanner_anchor_x(self, scanner_address: str) -> float | None:
         """Return scanner trilat X coordinate in meters."""
@@ -1405,12 +1428,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def _refresh_area_from_trilat(self, device: BermudaDevice, layout_hash: str) -> None:
         """Resolve one device room from trilat position and trained samples."""
+        state = self._get_trilat_decision_state(device)
+        nowstamp = monotonic_time_coarse()
         if (
             device.trilat_status not in {"ok", "low_confidence"}
             or device.trilat_x_m is None
             or device.trilat_y_m is None
         ):
-            device.diag_area_switch = "KDE room classification: trilat_unavailable"
+            state.room_challenger_id = None
+            state.room_challenger_since = 0.0
+            device.diag_area_switch = "Hybrid room classification: trilat_unavailable"
             device.apply_position_classification(
                 None,
                 floor_id=device.trilat_floor_id,
@@ -1420,7 +1447,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         if not self.room_classifier.has_trained_rooms(layout_hash, device.trilat_floor_id):
-            device.diag_area_switch = "KDE room classification: no_trained_rooms"
+            state.room_challenger_id = None
+            state.room_challenger_since = 0.0
+            device.diag_area_switch = "Hybrid room classification: no_trained_rooms"
             device.apply_position_classification(
                 None,
                 floor_id=device.trilat_floor_id,
@@ -1429,22 +1458,62 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
 
+        live_rssi_by_scanner: dict[str, float] = {}
+        for advert in self._latest_adverts_by_scanner(device).values():
+            if advert.stamp < nowstamp - DISTANCE_TIMEOUT:
+                continue
+            scanner = advert.scanner_device
+            if scanner.floor_id != device.trilat_floor_id:
+                continue
+            window_rssi = getattr(advert, "rssi_window_median", None)
+            if window_rssi is None:
+                window_rssi = advert.rssi_filtered
+            if window_rssi is None:
+                continue
+            live_rssi_by_scanner[advert.scanner_address.lower()] = float(window_rssi)
+
         classification = self.room_classifier.classify(
             layout_hash=layout_hash,
             floor_id=device.trilat_floor_id,
             x_m=device.trilat_x_m,
             y_m=device.trilat_y_m,
             z_m=device.trilat_z_m,
+            live_rssi_by_scanner=live_rssi_by_scanner,
         )
         device.diag_area_switch = (
-            "KDE room classification: "
+            "Hybrid room classification: "
             f"{classification.reason} "
             f"best={classification.best_area_id or 'none'} "
             f"score={classification.best_score:.2f} "
+            f"geom={classification.geometry_score:.2f} "
+            f"fp={classification.fingerprint_score:.2f} "
             f"second={classification.second_score:.2f} "
             f"topk_used={classification.topk_used}"
         )
+        stable_area_id = self._stable_area_id_for_topology(device)
         if classification.area_id is not None:
+            if stable_area_id is not None and stable_area_id != classification.area_id:
+                required_dwell = self._room_switch_dwell_seconds(classification)
+                if state.room_challenger_id != classification.area_id:
+                    state.room_challenger_id = classification.area_id
+                    state.room_challenger_since = nowstamp
+                    device.diag_area_switch += f" hold=room_switch_dwell({required_dwell:.1f}s)"
+                    device.apply_position_classification(
+                        stable_area_id,
+                        floor_id=device.trilat_floor_id,
+                        floor_name=device.trilat_floor_name,
+                    )
+                    return
+                if nowstamp - state.room_challenger_since < required_dwell:
+                    device.diag_area_switch += f" hold=room_switch_dwell({required_dwell:.1f}s)"
+                    device.apply_position_classification(
+                        stable_area_id,
+                        floor_id=device.trilat_floor_id,
+                        floor_name=device.trilat_floor_name,
+                    )
+                    return
+            state.room_challenger_id = None
+            state.room_challenger_since = 0.0
             device.apply_position_classification(
                 classification.area_id,
                 floor_id=device.trilat_floor_id,
@@ -1452,12 +1521,35 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
 
+        if stable_area_id is not None and classification.reason in {"weak_room_evidence", "room_ambiguity"}:
+            state.room_challenger_id = None
+            state.room_challenger_since = 0.0
+            device.diag_area_switch += " hold=weak_evidence"
+            device.apply_position_classification(
+                stable_area_id,
+                floor_id=device.trilat_floor_id,
+                floor_name=device.trilat_floor_name,
+            )
+            return
+
+        state.room_challenger_id = None
+        state.room_challenger_since = 0.0
         device.apply_position_classification(
             None,
             floor_id=device.trilat_floor_id,
             floor_name=device.trilat_floor_name,
             force_unknown=True,
         )
+
+    @staticmethod
+    def _room_switch_dwell_seconds(classification) -> float:
+        """Return an evidence-based dwell for room switches."""
+        margin = max(0.0, classification.best_score - classification.second_score)
+        if classification.best_score >= 0.60 and margin >= 0.35:
+            return 1.5
+        if classification.best_score >= 0.40 and margin >= 0.20:
+            return 2.5
+        return 4.0
 
     @dataclass
     class TrilatMobilityPolicy:
@@ -1488,6 +1580,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         last_residual_m: float | None = None
         last_mean_sigma_m: float | None = None
         last_status: str = "unknown"
+        room_challenger_id: str | None = None
+        room_challenger_since: float = 0.0
 
     _TRILAT_MIN_ANCHORS: int = 3
     _TRILAT_MIN_ANCHORS_3D: int = 4

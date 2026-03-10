@@ -119,6 +119,8 @@ class BermudaRangingModel:
         device_id: str | None,
         filtered_rssi: float | None,
         live_rssi_dispersion: float | None = None,
+        live_packet_count: int | None = None,
+        timestamp_health_penalty: float = 0.0,
     ) -> RangeEstimate | None:
         """Estimate distance and uncertainty for one scanner/device reading."""
         if filtered_rssi is None:
@@ -139,7 +141,13 @@ class BermudaRangingModel:
 
         sigma_rssi = model.scanner_rssi_rmse_db.get(scanner_address.lower(), model.global_rssi_rmse_db)
         if live_rssi_dispersion is not None:
-            sigma_rssi = max(sigma_rssi, float(live_rssi_dispersion))
+            sigma_rssi = math.sqrt((sigma_rssi * sigma_rssi) + (float(live_rssi_dispersion) ** 2))
+        if live_packet_count is not None and live_packet_count > 0:
+            packet_count = max(1, int(live_packet_count))
+            packet_penalty = math.sqrt(max(1.0, 5.0 / float(packet_count)))
+            sigma_rssi *= packet_penalty
+        if timestamp_health_penalty > 0.0:
+            sigma_rssi *= 1.0 + float(timestamp_health_penalty)
         sigma_m = sigma_rssi * range_m * math.log(10) / (10 * model.path_loss_exponent)
         sigma_m = max(0.001, sigma_m)
 
