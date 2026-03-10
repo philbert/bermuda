@@ -231,3 +231,51 @@ async def test_rooms_on_other_floors_are_ignored() -> None:
     result = classifier.classify(layout_hash="layout-a", floor_id="ground", x_m=0.0, y_m=0.0, z_m=0.0)
     assert result.area_id is None
     assert result.reason == "no_trained_rooms"
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_score_breaks_geometry_tie() -> None:
+    """RSSI fingerprints should distinguish rooms when geometry is ambiguous."""
+    classifier = BermudaRoomClassifier(
+        _FakeCalibration(
+            [
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "living_room",
+                    "position": {"x_m": -0.5, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                    "anchors": {
+                        "scanner_a": {"rssi_median": -52.0},
+                        "scanner_b": {"rssi_median": -77.0},
+                    },
+                },
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "bedroom",
+                    "position": {"x_m": 0.5, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                    "anchors": {
+                        "scanner_a": {"rssi_median": -77.0},
+                        "scanner_b": {"rssi_median": -52.0},
+                    },
+                },
+            ]
+        ),
+        _FakeAreaRegistry(),
+    )
+
+    await classifier.async_rebuild()
+
+    result = classifier.classify(
+        layout_hash="layout-a",
+        floor_id="ground",
+        x_m=0.0,
+        y_m=0.0,
+        z_m=0.0,
+        live_rssi_by_scanner={"scanner_a": -53.0, "scanner_b": -75.0},
+    )
+    assert result.area_id == "living_room"
+    assert result.reason == "ok"
+    assert result.fingerprint_score > result.geometry_score

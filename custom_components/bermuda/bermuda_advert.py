@@ -87,6 +87,8 @@ class BermudaAdvert(dict):
         self.rssi: float | None = None
         self.rssi_filtered: float | None = None
         self.rssi_dispersion: float = 0.0
+        self.rssi_window_median: float | None = None
+        self.rssi_window_packet_count: int = 0
         self.rssi_adjusted_raw: float | None = None
         self.tx_power: float | None = None
         self.rssi_distance: float | None = None
@@ -348,6 +350,10 @@ class BermudaAdvert(dict):
         del self.hist_rssi_adjusted[HIST_KEEP_COUNT:]
         del self.hist_rssi_filtered[HIST_KEEP_COUNT:]
 
+        adjusted_window = self.hist_rssi_adjusted[:window]
+        self.rssi_window_packet_count = len(adjusted_window)
+        self.rssi_window_median = statistics.median(adjusted_window) if adjusted_window else None
+
         filt_window = self.hist_rssi_filtered[:window]
         if len(filt_window) >= 3:
             self.rssi_dispersion = self._median_abs_deviation(filt_window) * 1.4826
@@ -368,11 +374,13 @@ class BermudaAdvert(dict):
         self.rssi_adjusted_raw = raw_rssi
         filtered_rssi = self._update_filtered_rssi(raw_rssi)
 
+        estimate_rssi = self.rssi_window_median if self.rssi_window_median is not None else filtered_rssi
         estimate = self._coordinator.estimate_sampled_range(
             scanner_address=self.scanner_address,
             device=self._device,
-            filtered_rssi=filtered_rssi,
+            filtered_rssi=estimate_rssi,
             live_rssi_dispersion=self.rssi_dispersion,
+            live_packet_count=self.rssi_window_packet_count,
         )
         if estimate is not None:
             distance = estimate.range_m

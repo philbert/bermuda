@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from custom_components.bermuda.const import DISTANCE_TIMEOUT
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.room_classifier import RoomClassification
 
 
 class _DummyDevice:
@@ -36,6 +37,7 @@ class _DummyDevice:
         self.trilat_horizontal_speed_mps = None
         self.trilat_vertical_speed_mps = None
         self.area_id = None
+        self.area_name = None
         self.area_last_seen_id = None
         self.area_is_unknown = False
         self.diag_area_switch = None
@@ -68,6 +70,19 @@ class _DummyDevice:
         self.trilat_floor_name = floor_name
         self.trilat_anchor_count = anchor_count
         self.trilat_residual_m = residual_m
+
+    def apply_position_classification(self, area_id, *, floor_id=None, floor_name=None, force_unknown=False):
+        if area_id is not None:
+            self.area_id = area_id
+            self.area_name = area_id
+            self.area_last_seen_id = area_id
+            self.area_is_unknown = False
+        else:
+            self.area_id = None
+            self.area_name = "Unknown" if force_unknown else None
+            self.area_is_unknown = force_unknown
+        self.trilat_floor_id = floor_id
+        self.trilat_floor_name = floor_name
 
 
 def _make_advert(scanner, stamp, rssi, distance_raw):
@@ -292,6 +307,78 @@ def test_missing_sigma_anchor_uses_default_uncertainty():
 
     assert device.trilat_status == "ok"
     assert device.trilat_anchor_count == 3
+
+
+def test_area_from_trilat_holds_previous_room_on_weak_evidence():
+    """Weak room evidence should hold the last stable room instead of switching to Unknown."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-hold")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id=None,
+            reason="weak_room_evidence",
+            best_area_id="living_room",
+            best_score=0.12,
+            second_score=0.05,
+            topk_used=1,
+            geometry_score=0.03,
+            fingerprint_score=0.11,
+        ),
+    )
+
+    coordinator._refresh_area_from_trilat(device, "layout-a")
+
+    assert device.area_id == "kitchen"
+    assert "hold=weak_evidence" in device.diag_area_switch
+
+
+def test_area_switch_requires_room_dwell_before_switching():
+    """A challenger room should need sustained evidence before Bermuda switches."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-switch")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.62,
+            second_score=0.12,
+            topk_used=3,
+            geometry_score=0.41,
+            fingerprint_score=0.73,
+        ),
+    )
+
+    with patch("custom_components.bermuda.coordinator.monotonic_time_coarse", side_effect=[100.0, 101.0, 103.0]):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+        assert "hold=room_switch_dwell" in device.diag_area_switch
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "living_room"
 
 
 def test_trilat_ewma_resets_on_floor_change():

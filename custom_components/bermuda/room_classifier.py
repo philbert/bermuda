@@ -1,4 +1,4 @@
-"""Calibration-sample KDE room classifier for Bermuda."""
+"""Calibration-sample hybrid room classifier for Bermuda."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ ROOM_KERNEL_Z_WEIGHT = 0.15
 ROOM_SCORE_MIN = 0.15
 ROOM_SCORE_RATIO_MIN = 1.25
 K_CAP = 3
+FINGERPRINT_WEIGHT = 0.65
+FINGERPRINT_K_CAP = 5
+FINGERPRINT_SIGMA_DB = 7.0
+FINGERPRINT_MISSING_PENALTY_DB = 9.0
+FINGERPRINT_EXTRA_SCANNER_PENALTY_DB = 4.5
+FINGERPRINT_MIN_COMMON_SCANNERS = 2
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,8 @@ class RoomClassification:
     best_score: float = 0.0
     second_score: float = 0.0
     topk_used: int = 0
+    geometry_score: float = 0.0
+    fingerprint_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +55,15 @@ class _SampleKernel:
     sigma_m: float
 
 
+@dataclass(frozen=True)
+class _SampleFingerprint:
+    """One persisted calibration sample represented in RSSI-space."""
+
+    area_id: str
+    floor_id: str | None
+    rssi_by_scanner: dict[str, float]
+
+
 class BermudaRoomClassifier:
     """Classify trilat positions into rooms using calibration samples."""
 
@@ -55,10 +72,12 @@ class BermudaRoomClassifier:
         self._calibration = calibration
         self._area_registry = area_registry
         self._layouts: dict[str, list[_SampleKernel]] = {}
+        self._fingerprints: dict[str, list[_SampleFingerprint]] = {}
 
     async def async_rebuild(self) -> None:
         """Rebuild all room kernels from current calibration samples."""
         layouts: dict[str, list[_SampleKernel]] = defaultdict(list)
+        fingerprints: dict[str, list[_SampleFingerprint]] = defaultdict(list)
         for sample in self._calibration.samples():
             if sample.get("quality", {}).get("status") == "rejected":
                 continue
@@ -95,11 +114,28 @@ class BermudaRoomClassifier:
                     sigma_m=max(float(sigma_m), 0.1),
                 )
             )
+            fingerprint_rssi: dict[str, float] = {}
+            for scanner_address, anchor in (sample.get("anchors") or {}).items():
+                rssi_median = anchor.get("rssi_median")
+                if rssi_median is None:
+                    continue
+                fingerprint_rssi[str(scanner_address).lower()] = float(rssi_median)
+            if fingerprint_rssi:
+                fingerprints[layout_hash].append(
+                    _SampleFingerprint(
+                        area_id=area_id,
+                        floor_id=area.floor_id,
+                        rssi_by_scanner=fingerprint_rssi,
+                    )
+                )
         self._layouts = dict(layouts)
+        self._fingerprints = dict(fingerprints)
 
     def has_trained_rooms(self, layout_hash: str, floor_id: str | None) -> bool:
         """Return whether trained rooms exist for a layout/floor pair."""
-        return any(sample.floor_id == floor_id for sample in self._layouts.get(layout_hash, []))
+        return any(sample.floor_id == floor_id for sample in self._layouts.get(layout_hash, [])) or any(
+            sample.floor_id == floor_id for sample in self._fingerprints.get(layout_hash, [])
+        )
 
     def classify(
         self,
@@ -109,15 +145,91 @@ class BermudaRoomClassifier:
         x_m: float,
         y_m: float,
         z_m: float | None,
+        live_rssi_by_scanner: dict[str, float] | None = None,
     ) -> RoomClassification:
-        """Classify one solved position using per-sample Gaussian kernels."""
+        """Classify one solved position using geometry and optional RSSI fingerprints."""
         if floor_id is None:
             return RoomClassification(area_id=None, reason="missing_floor")
 
         samples = [sample for sample in self._layouts.get(layout_hash, []) if sample.floor_id == floor_id]
-        if not samples:
+        fingerprints = [sample for sample in self._fingerprints.get(layout_hash, []) if sample.floor_id == floor_id]
+        if not samples and not fingerprints:
             return RoomClassification(area_id=None, reason="no_trained_rooms")
 
+        geometry_scores, geometry_topk = self._geometry_room_scores(samples, x_m=x_m, y_m=y_m, z_m=z_m)
+        fingerprint_scores, fingerprint_topk = self._fingerprint_room_scores(
+            fingerprints,
+            live_rssi_by_scanner or {},
+        )
+
+        if geometry_scores:
+            room_scores = {
+                area_id: (FINGERPRINT_WEIGHT * fingerprint_scores.get(area_id, 0.0))
+                + ((1.0 - FINGERPRINT_WEIGHT) * geometry_scores.get(area_id, 0.0))
+                if fingerprint_scores and live_rssi_by_scanner
+                else geometry_scores.get(area_id, 0.0)
+                for area_id in (set(geometry_scores) | set(fingerprint_scores))
+            }
+            topk_by_area = {
+                area_id: max(geometry_topk.get(area_id, 0), fingerprint_topk.get(area_id, 0))
+                for area_id in room_scores
+            }
+        else:
+            room_scores = fingerprint_scores
+            topk_by_area = fingerprint_topk
+
+        if not room_scores:
+            return RoomClassification(area_id=None, reason="weak_room_evidence")
+
+        ranked_rooms = sorted(room_scores.items(), key=lambda row: (row[1], row[0]), reverse=True)
+        best_area_id, best_score = ranked_rooms[0]
+        second_score = ranked_rooms[1][1] if len(ranked_rooms) > 1 else 0.0
+        topk_used = topk_by_area.get(best_area_id, 0)
+        geometry_score = geometry_scores.get(best_area_id, 0.0)
+        fingerprint_score = fingerprint_scores.get(best_area_id, 0.0)
+
+        if best_score < ROOM_SCORE_MIN:
+            return RoomClassification(
+                area_id=None,
+                reason="weak_room_evidence",
+                best_area_id=best_area_id,
+                best_score=best_score,
+                second_score=second_score,
+                topk_used=topk_used,
+                geometry_score=geometry_score,
+                fingerprint_score=fingerprint_score,
+            )
+        if len(ranked_rooms) > 1 and (best_score / max(second_score, 1e-9)) < ROOM_SCORE_RATIO_MIN:
+            return RoomClassification(
+                area_id=None,
+                reason="room_ambiguity",
+                best_area_id=best_area_id,
+                best_score=best_score,
+                second_score=second_score,
+                topk_used=topk_used,
+                geometry_score=geometry_score,
+                fingerprint_score=fingerprint_score,
+            )
+        return RoomClassification(
+            area_id=best_area_id,
+            reason="ok",
+            best_area_id=best_area_id,
+            best_score=best_score,
+            second_score=second_score,
+            topk_used=topk_used,
+            geometry_score=geometry_score,
+            fingerprint_score=fingerprint_score,
+        )
+
+    def _geometry_room_scores(
+        self,
+        samples: list[_SampleKernel],
+        *,
+        x_m: float,
+        y_m: float,
+        z_m: float | None,
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        """Return per-room geometry scores from the current solved point."""
         position_z = 0.0 if z_m is None else z_m
         room_scores: dict[str, list[float]] = defaultdict(list)
         for sample in samples:
@@ -128,38 +240,49 @@ class BermudaRoomClassifier:
             sample_score = math.exp(-0.5 * d2 / (sample.sigma_m * sample.sigma_m))
             room_scores[sample.area_id].append(sample_score)
 
-        ranked_rooms: list[tuple[float, str, int]] = []
+        scored_rooms: dict[str, float] = {}
+        topk_by_area: dict[str, int] = {}
         for area_id, scores in room_scores.items():
             top_scores = sorted(scores, reverse=True)[:K_CAP]
-            ranked_rooms.append((sum(top_scores) / len(top_scores), area_id, len(top_scores)))
-        ranked_rooms.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            scored_rooms[area_id] = sum(top_scores) / len(top_scores)
+            topk_by_area[area_id] = len(top_scores)
+        return scored_rooms, topk_by_area
 
-        best_score, best_area_id, topk_used = ranked_rooms[0]
-        second_score = ranked_rooms[1][0] if len(ranked_rooms) > 1 else 0.0
+    def _fingerprint_room_scores(
+        self,
+        samples: list[_SampleFingerprint],
+        live_rssi_by_scanner: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        """Return per-room RSSI-space fingerprint scores."""
+        if not live_rssi_by_scanner:
+            return {}, {}
 
-        if best_score < ROOM_SCORE_MIN:
-            return RoomClassification(
-                area_id=None,
-                reason="weak_room_evidence",
-                best_area_id=best_area_id,
-                best_score=best_score,
-                second_score=second_score,
-                topk_used=topk_used,
-            )
-        if len(ranked_rooms) > 1 and (best_score / max(second_score, 1e-9)) < ROOM_SCORE_RATIO_MIN:
-            return RoomClassification(
-                area_id=None,
-                reason="room_ambiguity",
-                best_area_id=best_area_id,
-                best_score=best_score,
-                second_score=second_score,
-                topk_used=topk_used,
-            )
-        return RoomClassification(
-            area_id=best_area_id,
-            reason="ok",
-            best_area_id=best_area_id,
-            best_score=best_score,
-            second_score=second_score,
-            topk_used=topk_used,
-        )
+        live = {str(scanner_address).lower(): float(rssi) for scanner_address, rssi in live_rssi_by_scanner.items()}
+        room_scores: dict[str, list[float]] = defaultdict(list)
+
+        for sample in samples:
+            common_scanners = sorted(set(sample.rssi_by_scanner) & set(live))
+            if len(common_scanners) < min(FINGERPRINT_MIN_COMMON_SCANNERS, len(live)):
+                continue
+
+            total_sq = 0.0
+            for scanner_address in common_scanners:
+                delta = live[scanner_address] - sample.rssi_by_scanner[scanner_address]
+                total_sq += delta * delta
+
+            missing_sample_scanners = len(set(sample.rssi_by_scanner) - set(live))
+            extra_live_scanners = len(set(live) - set(sample.rssi_by_scanner))
+            total_sq += missing_sample_scanners * (FINGERPRINT_MISSING_PENALTY_DB**2)
+            total_sq += extra_live_scanners * (FINGERPRINT_EXTRA_SCANNER_PENALTY_DB**2)
+            compared_count = len(common_scanners) + missing_sample_scanners + extra_live_scanners
+            mean_sq = total_sq / max(compared_count, 1)
+            sample_score = math.exp(-0.5 * mean_sq / (FINGERPRINT_SIGMA_DB**2))
+            room_scores[sample.area_id].append(sample_score)
+
+        scored_rooms: dict[str, float] = {}
+        topk_by_area: dict[str, int] = {}
+        for area_id, scores in room_scores.items():
+            top_scores = sorted(scores, reverse=True)[:FINGERPRINT_K_CAP]
+            scored_rooms[area_id] = sum(top_scores) / len(top_scores)
+            topk_by_area[area_id] = len(top_scores)
+        return scored_rooms, topk_by_area
