@@ -19,6 +19,28 @@ class AnchorMeasurement:
 
 
 @dataclass(frozen=True)
+class SolvePrior2D:
+    """Soft Gaussian prior for a 2D solve."""
+
+    x_m: float
+    y_m: float
+    sigma_x_m: float
+    sigma_y_m: float
+
+
+@dataclass(frozen=True)
+class SolvePrior3D:
+    """Soft Gaussian prior for a 3D solve."""
+
+    x_m: float
+    y_m: float
+    z_m: float
+    sigma_x_m: float
+    sigma_y_m: float
+    sigma_z_m: float
+
+
+@dataclass(frozen=True)
 class SolveResult:
     """Result from a trilateration solve attempt."""
 
@@ -92,6 +114,7 @@ def residual_rms_m_3d(x_m: float, y_m: float, z_m: float, anchors: list[AnchorMe
 def solve_2d_soft_l1(
     anchors: list[AnchorMeasurement],
     initial_guess: tuple[float, float] | None = None,
+    prior: SolvePrior2D | None = None,
     max_iterations: int = 18,
     tolerance_m: float = 1e-3,
     soft_l1_scale_m: float = 1.0,
@@ -144,6 +167,16 @@ def solve_2d_soft_l1(
             jt_w_r_0 += weight * grad_x * residual
             jt_w_r_1 += weight * grad_y * residual
 
+        if prior is not None:
+            sigma_x = max(prior.sigma_x_m, 1e-3)
+            sigma_y = max(prior.sigma_y_m, 1e-3)
+            prior_weight_x = 1.0 / (sigma_x * sigma_x)
+            prior_weight_y = 1.0 / (sigma_y * sigma_y)
+            jt_w_j_00 += prior_weight_x
+            jt_w_j_11 += prior_weight_y
+            jt_w_r_0 += prior_weight_x * (x_m - prior.x_m)
+            jt_w_r_1 += prior_weight_y * (y_m - prior.y_m)
+
         # Small damping for numerical stability.
         jt_w_j_00 += 1e-6
         jt_w_j_11 += 1e-6
@@ -188,6 +221,7 @@ def solve_2d_soft_l1(
 def solve_3d_soft_l1(
     anchors: list[AnchorMeasurement],
     initial_guess: tuple[float, float, float] | None = None,
+    prior: SolvePrior3D | None = None,
     max_iterations: int = 20,
     tolerance_m: float = 1e-3,
     soft_l1_scale_m: float = 1.0,
@@ -259,6 +293,20 @@ def solve_3d_soft_l1(
             jt_w_r_0 += weight * grad_x * residual
             jt_w_r_1 += weight * grad_y * residual
             jt_w_r_2 += weight * grad_z * residual
+
+        if prior is not None:
+            sigma_x = max(prior.sigma_x_m, 1e-3)
+            sigma_y = max(prior.sigma_y_m, 1e-3)
+            sigma_z = max(prior.sigma_z_m, 1e-3)
+            prior_weight_x = 1.0 / (sigma_x * sigma_x)
+            prior_weight_y = 1.0 / (sigma_y * sigma_y)
+            prior_weight_z = 1.0 / (sigma_z * sigma_z)
+            jt_w_j_00 += prior_weight_x
+            jt_w_j_11 += prior_weight_y
+            jt_w_j_22 += prior_weight_z
+            jt_w_r_0 += prior_weight_x * (x_m - prior.x_m)
+            jt_w_r_1 += prior_weight_y * (y_m - prior.y_m)
+            jt_w_r_2 += prior_weight_z * (z_m - prior.z_m)
 
         # Small damping for numerical stability.
         jt_w_j_00 += 1e-6

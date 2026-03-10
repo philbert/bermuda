@@ -106,6 +106,8 @@ from .const import (
 )
 from .trilateration import (
     AnchorMeasurement,
+    SolvePrior2D,
+    SolvePrior3D,
     anchor_centroid,
     anchor_centroid_3d,
     solve_2d_soft_l1,
@@ -1779,6 +1781,93 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         state.last_filter_stamp = nowstamp
         return (filtered_x, filtered_y), filtered_z
 
+    def _build_trilat_solve_prior(
+        self,
+        state: TrilatDecisionState,
+        *,
+        nowstamp: float,
+        mobility_type: str,
+        solver_dimension: str,
+        selected_floor_id: str | None,
+        mean_sigma_m: float | None,
+        mean_anchor_range_delta_m: float | None,
+    ) -> SolvePrior2D | SolvePrior3D | None:
+        """Build a soft predicted-position prior for the next trilat solve."""
+        if state.last_solution_xy is None or state.last_filter_stamp <= 0.0:
+            return None
+        if selected_floor_id is None or state.floor_id is None or selected_floor_id != state.floor_id:
+            return None
+
+        raw_dt = nowstamp - state.last_filter_stamp
+        if raw_dt > self._TRILAT_MAX_FILTER_DT_S:
+            return None
+        if mean_anchor_range_delta_m is not None and mean_anchor_range_delta_m > (self._TRILAT_MAX_RESIDUAL_M * 2.0):
+            return None
+
+        dt = raw_dt
+        if dt <= 0.0:
+            dt = 0.0
+        dt = min(dt, self._TRILAT_MAX_FILTER_DT_S)
+
+        predicted_x = state.last_solution_xy[0] + (state.velocity_x_mps * dt)
+        predicted_y = state.last_solution_xy[1] + (state.velocity_y_mps * dt)
+
+        residual_term = min(self._TRILAT_MAX_RESIDUAL_M, max(0.0, state.last_residual_m or 0.0))
+        sigma_term = min(self._TRILAT_DEFAULT_ANCHOR_SIGMA_M, max(0.0, mean_sigma_m or state.last_mean_sigma_m or 0.0))
+        range_delta_term = min(12.0, max(0.0, mean_anchor_range_delta_m or 0.0))
+        speed_xy = math.hypot(state.velocity_x_mps, state.velocity_y_mps)
+        status_multiplier = 1.0 if state.last_status == "ok" else 1.7
+
+        if mobility_type == MOBILITY_STATIONARY:
+            base_xy_sigma = 0.45
+            base_z_sigma = 0.60
+            dt_xy_term = 0.18 * dt
+            dt_z_term = 0.10 * dt
+        else:
+            base_xy_sigma = 0.95
+            base_z_sigma = 1.15
+            dt_xy_term = 0.35 * dt
+            dt_z_term = 0.18 * dt
+
+        sigma_xy = (
+            base_xy_sigma
+            + dt_xy_term
+            + min(2.0, speed_xy * dt * 0.35)
+            + (0.22 * residual_term)
+            + (0.10 * sigma_term)
+            + (0.28 * range_delta_term)
+        ) * status_multiplier
+        sigma_xy = max(0.25, sigma_xy)
+
+        if solver_dimension == "3d":
+            if state.last_solution_z is None:
+                return None
+            predicted_z = state.last_solution_z + (state.velocity_z_mps * dt)
+            sigma_z = (
+                base_z_sigma
+                + dt_z_term
+                + min(1.5, abs(state.velocity_z_mps) * dt * 0.30)
+                + (0.15 * residual_term)
+                + (0.08 * sigma_term)
+                + (0.12 * range_delta_term)
+            ) * status_multiplier
+            sigma_z = max(0.35, sigma_z)
+            return SolvePrior3D(
+                x_m=predicted_x,
+                y_m=predicted_y,
+                z_m=predicted_z,
+                sigma_x_m=sigma_xy,
+                sigma_y_m=sigma_xy,
+                sigma_z_m=sigma_z,
+            )
+
+        return SolvePrior2D(
+            x_m=predicted_x,
+            y_m=predicted_y,
+            sigma_x_m=sigma_xy,
+            sigma_y_m=sigma_xy,
+        )
+
     @staticmethod
     def _apply_soft_vertical_prior(
         z_value: float,
@@ -2250,6 +2339,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         anchor_ids = tuple(anchor.scanner_address for anchor in anchors)
         anchor_ranges = {anchor.scanner_address: anchor.range_m for anchor in anchors}
         anchor_z = {anchor.scanner_address: anchor.z_m for anchor in anchors}
+        common_anchor_deltas = [
+            abs(anchor_ranges[address] - state.last_anchor_ranges[address])
+            for address in anchor_ids
+            if address in state.last_anchor_ranges
+        ]
+        mean_anchor_range_delta_m = (
+            sum(common_anchor_deltas) / len(common_anchor_deltas)
+            if common_anchor_deltas
+            else None
+        )
         can_solve_3d = (
             anchor_count >= self._TRILAT_MIN_ANCHORS_3D
             and all(anchor.z_m is not None for anchor in anchors)
@@ -2305,6 +2404,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         if solver_dimension == "3d":
             centroid_3d = anchor_centroid_3d(anchors)
             initial_guess_3d = centroid_3d
+            solve_prior = self._build_trilat_solve_prior(
+                state,
+                nowstamp=nowstamp,
+                mobility_type=device.get_mobility_type(),
+                solver_dimension="3d",
+                selected_floor_id=selected_floor_id,
+                mean_sigma_m=mean_sigma_m,
+                mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+            )
             if (
                 state.last_solution_xy is not None
                 and state.last_solution_z is not None
@@ -2320,17 +2428,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         state.last_solution_xy[1],
                         state.last_solution_z,
                     )
-            solve_result = solve_3d_soft_l1(anchors, initial_guess=initial_guess_3d)
+            if solve_prior is not None and (mean_anchor_range_delta_m is None or mean_anchor_range_delta_m <= self._TRILAT_MAX_RESIDUAL_M):
+                initial_guess_3d = (solve_prior.x_m, solve_prior.y_m, solve_prior.z_m)
+            solve_result = solve_3d_soft_l1(anchors, initial_guess=initial_guess_3d, prior=solve_prior)
         else:
             centroid = anchor_centroid(anchors)
             initial_guess_2d = centroid
+            solve_prior = self._build_trilat_solve_prior(
+                state,
+                nowstamp=nowstamp,
+                mobility_type=device.get_mobility_type(),
+                solver_dimension="2d",
+                selected_floor_id=selected_floor_id,
+                mean_sigma_m=mean_sigma_m,
+                mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+            )
             if state.last_solution_xy is not None and selected_floor_id == state.floor_id:
                 if math.hypot(
                     state.last_solution_xy[0] - centroid[0],
                     state.last_solution_xy[1] - centroid[1],
                 ) <= self._TRILAT_MAX_RESIDUAL_M:
                     initial_guess_2d = state.last_solution_xy
-            solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess_2d)
+            if solve_prior is not None and (mean_anchor_range_delta_m is None or mean_anchor_range_delta_m <= self._TRILAT_MAX_RESIDUAL_M):
+                initial_guess_2d = (solve_prior.x_m, solve_prior.y_m)
+            solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess_2d, prior=solve_prior)
 
         state.last_anchor_ids = anchor_ids
         state.last_anchor_ranges = anchor_ranges

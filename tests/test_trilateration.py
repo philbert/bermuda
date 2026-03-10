@@ -6,6 +6,8 @@ import math
 
 from custom_components.bermuda.trilateration import (
     AnchorMeasurement,
+    SolvePrior2D,
+    SolvePrior3D,
     anchor_centroid,
     anchor_centroid_3d,
     residual_rms_m,
@@ -120,3 +122,73 @@ def test_residual_rms_m_3d():
     ]
     rms = residual_rms_m_3d(1.0, 1.0, 1.0, anchors)
     assert rms < 1e-3
+
+
+def test_solve_2d_soft_l1_prior_pulls_noisy_solution_toward_previous_state():
+    """A soft prior should pull a weakly-constrained solve toward the previous plausible position."""
+    target = (10.0, 12.0)
+    anchors = [
+        AnchorMeasurement("a", 0.0, 0.0, math.hypot(target[0], target[1]), sigma_m=4.0),
+        AnchorMeasurement("b", 6.0, 0.0, math.hypot(target[0] - 6.0, target[1]), sigma_m=4.0),
+        AnchorMeasurement("c", 0.0, 8.0, math.hypot(target[0], target[1] - 8.0), sigma_m=4.0),
+    ]
+    prior = SolvePrior2D(x_m=3.0, y_m=4.0, sigma_x_m=0.8, sigma_y_m=0.8)
+
+    unprior_result = solve_2d_soft_l1(anchors, initial_guess=(9.0, 10.0))
+    prior_result = solve_2d_soft_l1(anchors, initial_guess=(prior.x_m, prior.y_m), prior=prior)
+
+    assert unprior_result.ok
+    assert prior_result.ok
+    assert prior_result.x_m is not None
+    assert prior_result.y_m is not None
+    assert unprior_result.x_m is not None
+    assert unprior_result.y_m is not None
+
+    unprior_distance = math.hypot(unprior_result.x_m - prior.x_m, unprior_result.y_m - prior.y_m)
+    prior_distance = math.hypot(prior_result.x_m - prior.x_m, prior_result.y_m - prior.y_m)
+    assert prior_distance < unprior_distance
+
+
+def test_solve_3d_soft_l1_prior_pulls_noisy_solution_toward_previous_state():
+    """A soft prior should influence 3D solves when anchor uncertainty is high."""
+    target = (3.5, 3.0, 2.8)
+    anchors = [
+        AnchorMeasurement("a", 0.0, 0.0, math.dist(target, (0.0, 0.0, 0.0)), 0.0, sigma_m=5.0),
+        AnchorMeasurement("b", 2.0, 0.0, math.dist(target, (2.0, 0.0, 0.0)), 0.0, sigma_m=5.0),
+        AnchorMeasurement("c", 0.0, 2.0, math.dist(target, (0.0, 2.0, 0.0)), 0.0, sigma_m=5.0),
+        AnchorMeasurement("d", 0.0, 0.0, math.dist(target, (0.0, 0.0, 2.0)), 2.0, sigma_m=5.0),
+    ]
+    prior = SolvePrior3D(
+        x_m=1.0,
+        y_m=1.0,
+        z_m=1.0,
+        sigma_x_m=0.9,
+        sigma_y_m=0.9,
+        sigma_z_m=0.9,
+    )
+
+    unprior_result = solve_3d_soft_l1(anchors, initial_guess=target)
+    prior_result = solve_3d_soft_l1(
+        anchors,
+        initial_guess=(prior.x_m, prior.y_m, prior.z_m),
+        prior=prior,
+    )
+
+    assert unprior_result.ok
+    assert prior_result.ok
+    assert unprior_result.x_m is not None
+    assert unprior_result.y_m is not None
+    assert unprior_result.z_m is not None
+    assert prior_result.x_m is not None
+    assert prior_result.y_m is not None
+    assert prior_result.z_m is not None
+
+    unprior_distance = math.dist(
+        (unprior_result.x_m, unprior_result.y_m, unprior_result.z_m),
+        (prior.x_m, prior.y_m, prior.z_m),
+    )
+    prior_distance = math.dist(
+        (prior_result.x_m, prior_result.y_m, prior_result.z_m),
+        (prior.x_m, prior.y_m, prior.z_m),
+    )
+    assert prior_distance < unprior_distance
