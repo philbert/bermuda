@@ -12,6 +12,8 @@ from custom_components.bermuda.trilateration import (
     anchor_centroid_3d,
     residual_rms_m,
     residual_rms_m_3d,
+    solve_quality_metrics_2d,
+    solve_quality_metrics_3d,
     solve_2d_soft_l1,
     solve_3d_soft_l1,
 )
@@ -122,6 +124,66 @@ def test_residual_rms_m_3d():
     ]
     rms = residual_rms_m_3d(1.0, 1.0, 1.0, anchors)
     assert rms < 1e-3
+
+
+def test_solve_quality_metrics_reward_well_spread_geometry():
+    """Well-spread anchors should score better than nearly collinear anchors."""
+    good = [
+        AnchorMeasurement("a", 0.0, 0.0, 5.0, sigma_m=1.0),
+        AnchorMeasurement("b", 6.0, 0.0, 5.0, sigma_m=1.0),
+        AnchorMeasurement("c", 0.0, 8.0, 5.0, sigma_m=1.0),
+    ]
+    poor = [
+        AnchorMeasurement("a", 0.0, 0.0, 2.0, sigma_m=1.0),
+        AnchorMeasurement("b", 4.0, 0.2, 2.0, sigma_m=1.0),
+        AnchorMeasurement("c", 8.0, 0.4, 6.0, sigma_m=1.0),
+    ]
+
+    good_metrics = solve_quality_metrics_2d(3.0, 4.0, good)
+    poor_metrics = solve_quality_metrics_2d(3.0, 0.1, poor)
+
+    assert good_metrics.geometry_quality_01 > poor_metrics.geometry_quality_01
+    assert good_metrics.gdop is not None
+    assert poor_metrics.condition_number is not None
+
+
+def test_solve_quality_metrics_penalize_inconsistent_residuals():
+    """Residual consistency should fall when normalized residuals diverge badly."""
+    consistent = [
+        AnchorMeasurement("a", 0.0, 0.0, 5.0, sigma_m=1.0),
+        AnchorMeasurement("b", 6.0, 0.0, 5.0, sigma_m=1.0),
+        AnchorMeasurement("c", 0.0, 8.0, 5.0, sigma_m=1.0),
+    ]
+    inconsistent = [
+        AnchorMeasurement("a", 0.0, 0.0, 5.0, sigma_m=1.0),
+        AnchorMeasurement("b", 6.0, 0.0, 2.0, sigma_m=1.0),
+        AnchorMeasurement("c", 0.0, 8.0, 8.0, sigma_m=1.0),
+    ]
+
+    consistent_metrics = solve_quality_metrics_2d(3.0, 4.0, consistent)
+    inconsistent_metrics = solve_quality_metrics_2d(3.0, 4.0, inconsistent)
+
+    assert consistent_metrics.residual_consistency_01 > inconsistent_metrics.residual_consistency_01
+    assert consistent_metrics.normalized_residual_rms is not None
+    assert inconsistent_metrics.normalized_residual_rms is not None
+    assert consistent_metrics.normalized_residual_rms < inconsistent_metrics.normalized_residual_rms
+
+
+def test_solve_quality_metrics_3d_expose_geometry_and_residuals():
+    """3D quality metrics should be populated for non-coplanar anchors."""
+    anchors = [
+        AnchorMeasurement("a", 0.0, 0.0, math.sqrt(3.0), 0.0, sigma_m=1.0),
+        AnchorMeasurement("b", 2.0, 0.0, math.sqrt(3.0), 0.0, sigma_m=1.0),
+        AnchorMeasurement("c", 0.0, 2.0, math.sqrt(3.0), 0.0, sigma_m=1.0),
+        AnchorMeasurement("d", 0.0, 0.0, math.sqrt(3.0), 2.0, sigma_m=1.0),
+    ]
+
+    metrics = solve_quality_metrics_3d(1.0, 1.0, 1.0, anchors)
+
+    assert metrics.geometry_quality_01 > 0.0
+    assert metrics.residual_consistency_01 > 0.9
+    assert metrics.gdop is not None
+    assert metrics.condition_number is not None
 
 
 def test_solve_2d_soft_l1_prior_pulls_noisy_solution_toward_previous_state():

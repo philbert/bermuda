@@ -88,6 +88,8 @@ async def async_setup_entry(
             entities.append(BermudaSensorTrilatAnchorCount(coordinator, entry, address))
             entities.append(BermudaSensorPositionConfidence(coordinator, entry, address))
             entities.append(BermudaSensorTrackingConfidence(coordinator, entry, address))
+            entities.append(BermudaSensorGeometryQuality(coordinator, entry, address))
+            entities.append(BermudaSensorResidualConsistency(coordinator, entry, address))
             entities.append(BermudaSensorHorizontalSpeed(coordinator, entry, address))
             entities.append(BermudaSensorVerticalSpeed(coordinator, entry, address))
 
@@ -764,6 +766,52 @@ class BermudaSensorTrackingConfidence(BermudaSensorPositionConfidence):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         return {"level": getattr(self._device, "trilat_tracking_confidence_level", "low")}
+
+
+class BermudaSensorGeometryQuality(BermudaSensorPositionConfidence):
+    """Diagnostic sensor for trilat anchor-geometry quality."""
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_geometry_quality"
+
+    @property
+    def name(self):
+        return "Geometry Quality"
+
+    @property
+    def native_value(self):
+        return round(getattr(self._device, "trilat_geometry_quality", 0.0), 1)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        return {
+            "gdop": getattr(self._device, "trilat_geometry_gdop", None),
+            "condition_number": getattr(self._device, "trilat_geometry_condition", None),
+        }
+
+
+class BermudaSensorResidualConsistency(BermudaSensorPositionConfidence):
+    """Diagnostic sensor for per-anchor residual consistency."""
+
+    @property
+    def unique_id(self):
+        return f"{self._device.unique_id}_residual_consistency"
+
+    @property
+    def name(self):
+        return "Residual Consistency"
+
+    @property
+    def native_value(self):
+        return round(getattr(self._device, "trilat_residual_consistency", 0.0), 1)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        return {
+            "normalized_residual_rms": getattr(self._device, "trilat_normalized_residual_rms", None),
+            "residual_m": getattr(self._device, "trilat_residual_m", None),
+        }
 
 
 class BermudaSensorHorizontalSpeed(BermudaSensor):

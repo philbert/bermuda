@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class AnchorMeasurement:
@@ -51,6 +53,17 @@ class SolveResult:
     residual_rms_m: float | None
     iterations: int
     reason: str
+
+
+@dataclass(frozen=True)
+class SolveQualityMetrics:
+    """Derived quality signals for a solved trilat point."""
+
+    geometry_quality_01: float
+    residual_consistency_01: float
+    gdop: float | None
+    condition_number: float | None
+    normalized_residual_rms: float | None
 
 
 def anchor_centroid(anchors: list[AnchorMeasurement]) -> tuple[float, float]:
@@ -109,6 +122,98 @@ def residual_rms_m_3d(x_m: float, y_m: float, z_m: float, anchors: list[AnchorMe
         residual = dist - anchor.range_m
         err_sq_sum += residual * residual
     return math.sqrt(err_sq_sum / len(anchors))
+
+
+def solve_quality_metrics_2d(x_m: float, y_m: float, anchors: list[AnchorMeasurement]) -> SolveQualityMetrics:
+    """Compute geometry and residual quality metrics for a solved 2D point."""
+    return _solve_quality_metrics(x_m=x_m, y_m=y_m, z_m=None, anchors=anchors, dimensions=2)
+
+
+def solve_quality_metrics_3d(
+    x_m: float,
+    y_m: float,
+    z_m: float,
+    anchors: list[AnchorMeasurement],
+) -> SolveQualityMetrics:
+    """Compute geometry and residual quality metrics for a solved 3D point."""
+    return _solve_quality_metrics(x_m=x_m, y_m=y_m, z_m=z_m, anchors=anchors, dimensions=3)
+
+
+def _solve_quality_metrics(
+    *,
+    x_m: float,
+    y_m: float,
+    z_m: float | None,
+    anchors: list[AnchorMeasurement],
+    dimensions: int,
+) -> SolveQualityMetrics:
+    """Compute normalized geometry and residual-consistency scores for a solve."""
+    if len(anchors) < dimensions + 1:
+        return SolveQualityMetrics(
+            geometry_quality_01=0.0,
+            residual_consistency_01=0.0,
+            gdop=None,
+            condition_number=None,
+            normalized_residual_rms=None,
+        )
+
+    jacobian_rows: list[list[float]] = []
+    normalized_residuals: list[float] = []
+    for anchor in anchors:
+        sigma = max(anchor.sigma_m, 1e-3)
+        if dimensions == 3:
+            if z_m is None or anchor.z_m is None:
+                return SolveQualityMetrics(
+                    geometry_quality_01=0.0,
+                    residual_consistency_01=0.0,
+                    gdop=None,
+                    condition_number=None,
+                    normalized_residual_rms=None,
+                )
+            dx = x_m - anchor.x_m
+            dy = y_m - anchor.y_m
+            dz = z_m - anchor.z_m
+            distance = math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+            distance = max(distance, 1e-6)
+            jacobian_rows.append([dx / distance / sigma, dy / distance / sigma, dz / distance / sigma])
+        else:
+            dx = x_m - anchor.x_m
+            dy = y_m - anchor.y_m
+            distance = math.hypot(dx, dy)
+            distance = max(distance, 1e-6)
+            jacobian_rows.append([dx / distance / sigma, dy / distance / sigma])
+        normalized_residuals.append((distance - anchor.range_m) / sigma)
+
+    design = np.asarray(jacobian_rows, dtype=float)
+    info = design.T @ design
+    try:
+        covariance = np.linalg.pinv(info, hermitian=True)
+        gdop = float(np.sqrt(np.trace(covariance)))
+        condition_number = float(np.linalg.cond(info))
+    except np.linalg.LinAlgError:
+        gdop = None
+        condition_number = None
+
+    gdop_term = 0.0
+    if gdop is not None and math.isfinite(gdop):
+        gdop_term = 1.0 / (1.0 + max(0.0, gdop - 1.0))
+
+    cond_term = 0.0
+    if condition_number is not None and math.isfinite(condition_number):
+        cond_term = 1.0 / (1.0 + max(0.0, math.log10(max(condition_number, 1.0))))
+
+    geometry_quality_01 = math.sqrt(max(0.0, gdop_term) * max(0.0, cond_term))
+    normalized = np.asarray(normalized_residuals, dtype=float)
+    normalized_residual_rms = float(np.sqrt(np.mean(np.square(normalized))))
+    residual_consistency_01 = float(np.mean(np.exp(-0.5 * np.clip(np.square(normalized), 0.0, 16.0))))
+
+    return SolveQualityMetrics(
+        geometry_quality_01=max(0.0, min(1.0, geometry_quality_01)),
+        residual_consistency_01=max(0.0, min(1.0, residual_consistency_01)),
+        gdop=gdop,
+        condition_number=condition_number,
+        normalized_residual_rms=normalized_residual_rms,
+    )
 
 
 def solve_2d_soft_l1(

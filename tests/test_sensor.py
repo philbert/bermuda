@@ -13,7 +13,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.const import DOMAIN, NAME
 from custom_components.bermuda.sensor import (
+    BermudaSensorGeometryQuality,
     BermudaSensorPositionConfidence,
+    BermudaSensorResidualConsistency,
     BermudaSensorScannerAdvertStatus,
     BermudaSensorTrackedDeviceAdvertStatus,
     BermudaSensorTrackingConfidence,
@@ -101,15 +103,30 @@ async def test_trilat_confidence_sensors_expose_numeric_confidence(hass) -> None
     device.trilat_confidence_level = "low"
     device.trilat_tracking_confidence = 6.789
     device.trilat_tracking_confidence_level = "medium"
+    device.trilat_geometry_quality = 4.321
+    device.trilat_geometry_gdop = 1.8
+    device.trilat_geometry_condition = 12.5
+    device.trilat_residual_consistency = 7.654
+    device.trilat_normalized_residual_rms = 1.234
+    device.trilat_residual_m = 0.9
     coordinator.devices[device.address] = device
 
     raw_confidence = BermudaSensorPositionConfidence(coordinator, entry, device.address)
     tracking_confidence = BermudaSensorTrackingConfidence(coordinator, entry, device.address)
+    geometry_quality = BermudaSensorGeometryQuality(coordinator, entry, device.address)
+    residual_consistency = BermudaSensorResidualConsistency(coordinator, entry, device.address)
 
     assert raw_confidence.native_value == 2.2
     assert raw_confidence.state_class == SensorStateClass.MEASUREMENT
     assert tracking_confidence.native_value == 6.8
     assert tracking_confidence.state_class == SensorStateClass.MEASUREMENT
+    assert geometry_quality.native_value == 4.3
+    assert geometry_quality.extra_state_attributes == {"gdop": 1.8, "condition_number": 12.5}
+    assert residual_consistency.native_value == 7.7
+    assert residual_consistency.extra_state_attributes == {
+        "normalized_residual_rms": 1.234,
+        "residual_m": 0.9,
+    }
 
 
 async def test_per_scanner_ble_status_sensors_expose_structured_status(hass) -> None:
