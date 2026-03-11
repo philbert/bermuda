@@ -106,10 +106,13 @@ from .const import (
 )
 from .trilateration import (
     AnchorMeasurement,
+    SolveQualityMetrics,
     SolvePrior2D,
     SolvePrior3D,
     anchor_centroid,
     anchor_centroid_3d,
+    solve_quality_metrics_2d,
+    solve_quality_metrics_3d,
     solve_2d_soft_l1,
     solve_3d_soft_l1,
 )
@@ -1581,6 +1584,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         last_solver_dimension: str = "2d"
         last_residual_m: float | None = None
         last_mean_sigma_m: float | None = None
+        last_geometry_quality_01: float = 0.0
+        last_residual_consistency_01: float = 0.0
+        last_geometry_gdop: float | None = None
+        last_geometry_condition: float | None = None
+        last_normalized_residual_rms: float | None = None
         last_status: str = "unknown"
         room_challenger_id: str | None = None
         room_challenger_since: float = 0.0
@@ -1624,6 +1632,61 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return "medium"
         return "low"
 
+    @staticmethod
+    def _quality_score_to_sensor_value(score_01: float) -> float:
+        """Convert a 0..1 quality score into a 0..10 diagnostic value."""
+        return round(max(0.0, min(1.0, score_01)) * 10.0, 1)
+
+    def _set_trilat_quality_metrics(
+        self,
+        device: BermudaDevice,
+        *,
+        geometry_quality_01: float,
+        residual_consistency_01: float,
+        gdop: float | None,
+        condition_number: float | None,
+        normalized_residual_rms: float | None,
+    ) -> None:
+        """Store solve-quality metrics on the device for diagnostics and history."""
+        device.trilat_geometry_quality = self._quality_score_to_sensor_value(geometry_quality_01)
+        device.trilat_residual_consistency = self._quality_score_to_sensor_value(residual_consistency_01)
+        device.trilat_geometry_gdop = gdop
+        device.trilat_geometry_condition = condition_number
+        device.trilat_normalized_residual_rms = normalized_residual_rms
+
+    def _clear_trilat_quality_metrics(self, device: BermudaDevice) -> None:
+        """Reset solve-quality diagnostics on the device."""
+        self._set_trilat_quality_metrics(
+            device,
+            geometry_quality_01=0.0,
+            residual_consistency_01=0.0,
+            gdop=None,
+            condition_number=None,
+            normalized_residual_rms=None,
+        )
+
+    @staticmethod
+    def _compute_trilat_quality_metrics(
+        anchors: list[AnchorMeasurement],
+        *,
+        solver_dimension: str,
+        x_m: float | None,
+        y_m: float | None,
+        z_m: float | None,
+    ) -> SolveQualityMetrics:
+        """Compute geometry and residual-consistency metrics for a solved point."""
+        if x_m is None or y_m is None:
+            return SolveQualityMetrics(
+                geometry_quality_01=0.0,
+                residual_consistency_01=0.0,
+                gdop=None,
+                condition_number=None,
+                normalized_residual_rms=None,
+            )
+        if solver_dimension == "3d" and z_m is not None:
+            return solve_quality_metrics_3d(x_m, y_m, z_m, anchors)
+        return solve_quality_metrics_2d(x_m, y_m, anchors)
+
     def _set_trilat_confidence(self, device: BermudaDevice, score: float) -> None:
         """Store trilateration confidence on the device."""
         clamped = round(max(0.0, min(10.0, score)), 1)
@@ -1641,21 +1704,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         anchor_count: int,
         residual_m: float | None,
         solver_dimension: str,
+        geometry_quality_01: float = 0.0,
+        residual_consistency_01: float = 0.0,
         floor_ambiguous: bool = False,
         mean_sigma_m: float | None = None,
     ) -> float:
         """Compute a conservative 0..10 confidence score for the current estimate."""
         residual_term = 0.0
         if residual_m is not None:
-            residual_term = max(0.0, 1.0 - (residual_m / self._TRILAT_MAX_RESIDUAL_M))
+            residual_ref = max(1.0, (mean_sigma_m or 1.0) * (2.0 if solver_dimension == "2d" else 1.6))
+            residual_term = 1.0 / (1.0 + ((residual_m / residual_ref) ** 2))
         anchor_target = 6.0 if solver_dimension == "3d" else 4.0
         anchor_term = min(float(anchor_count) / anchor_target, 1.0)
-        score = (7.2 * residual_term) + (2.3 * anchor_term) + (0.5 if solver_dimension == "3d" else 0.0)
+        score = (
+            (3.2 * residual_term)
+            + (1.4 * anchor_term)
+            + (2.7 * max(0.0, min(1.0, geometry_quality_01)))
+            + (2.7 * max(0.0, min(1.0, residual_consistency_01)))
+            + (0.5 if solver_dimension == "3d" else 0.0)
+        )
         if mean_sigma_m is not None:
-            sigma_term = max(0.0, 1.0 - (mean_sigma_m / self._TRILAT_MAX_ANCHOR_SIGMA_M))
-            score = (score * 0.8) + (2.0 * sigma_term)
+            sigma_term = 1.0 / (1.0 + max(0.0, mean_sigma_m - 1.0) / 2.5)
+            score = (score * 0.85) + (1.5 * sigma_term)
         if floor_ambiguous:
-            score -= 2.0
+            score -= 1.5
         return score
 
     def _compute_tracking_confidence(
@@ -1666,10 +1738,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         mobility_type: str,
         used_prior: bool,
         mean_anchor_range_delta_m: float | None,
+        geometry_quality_01: float = 0.0,
+        residual_consistency_01: float = 0.0,
         floor_ambiguous: bool = False,
     ) -> float:
         """Estimate confidence in the filtered tracked position rather than the raw solve."""
-        raw_component = 0.45 * max(0.0, min(10.0, raw_score))
+        raw_component = 0.35 * max(0.0, min(10.0, raw_score))
+        quality_component = 2.1 * max(0.0, min(1.0, geometry_quality_01))
+        quality_component += 2.1 * max(0.0, min(1.0, residual_consistency_01))
 
         horizontal_speed = math.hypot(state.velocity_x_mps, state.velocity_y_mps)
         vertical_speed = abs(state.velocity_z_mps)
@@ -1690,7 +1766,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             continuity_component *= max(0.0, 1.0 - min(1.0, mean_anchor_range_delta_m / 3.0))
 
         prior_component = 1.0 if used_prior else 0.0
-        score = raw_component + stability_component + continuity_component + prior_component
+        score = raw_component + quality_component + stability_component + continuity_component + prior_component
         if floor_ambiguous:
             score -= 1.0
         return score
@@ -2183,8 +2259,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 anchor_count=0,
             )
             state.last_status = "unknown"
+            state.last_geometry_quality_01 = 0.0
+            state.last_residual_consistency_01 = 0.0
+            state.last_geometry_gdop = None
+            state.last_geometry_condition = None
+            state.last_normalized_residual_rms = None
             self._set_trilat_confidence(device, 0.0)
             self._set_tracking_confidence(device, 0.0)
+            self._clear_trilat_quality_metrics(device)
             if _debug_this_device:
                 _LOGGER_TARGET_SPAM_LESS.debug(
                     f"trilat_unknown:{device.address}:stale_inputs",
@@ -2214,8 +2296,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             _apply_anchor_status_entries()
             device.set_trilat_unknown("ambiguous_floor", floor_id=state.floor_id, floor_name=self._resolve_floor_name(state.floor_id))
             state.last_status = "unknown"
+            state.last_geometry_quality_01 = 0.0
+            state.last_residual_consistency_01 = 0.0
+            state.last_geometry_gdop = None
+            state.last_geometry_condition = None
+            state.last_normalized_residual_rms = None
             self._set_trilat_confidence(device, 0.0)
             self._set_tracking_confidence(device, 0.0)
+            self._clear_trilat_quality_metrics(device)
             return
 
         floors = sorted({floor_id for floor_id, _rssi in evidence_inputs})
@@ -2319,6 +2407,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             state.last_solver_dimension = "2d"
             state.last_residual_m = None
             state.last_mean_sigma_m = None
+            state.last_geometry_quality_01 = 0.0
+            state.last_residual_consistency_01 = 0.0
+            state.last_geometry_gdop = None
+            state.last_geometry_condition = None
+            state.last_normalized_residual_rms = None
 
         anchors: list[AnchorMeasurement] = []
         anchor_sigmas_m: list[float] = []
@@ -2389,6 +2482,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             device.trilat_reason = "insufficient_anchors_low_confidence"
             raw_confidence = max(0.5, float(anchor_count) * 0.8)
             self._set_trilat_confidence(device, raw_confidence)
+            self._clear_trilat_quality_metrics(device)
             self._set_tracking_confidence(
                 device,
                 self._compute_tracking_confidence(
@@ -2397,11 +2491,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     mobility_type=device.get_mobility_type(),
                     used_prior=False,
                     mean_anchor_range_delta_m=None,
+                    geometry_quality_01=0.0,
+                    residual_consistency_01=0.0,
                     floor_ambiguous=floor_ambiguous_persisted,
                 ),
             )
             state.last_mean_sigma_m = mean_sigma_m
             state.last_status = "low_confidence"
+            state.last_geometry_quality_01 = 0.0
+            state.last_residual_consistency_01 = 0.0
+            state.last_geometry_gdop = None
+            state.last_geometry_condition = None
+            state.last_normalized_residual_rms = None
             if _debug_this_device:
                 _LOGGER_TARGET_SPAM_LESS.debug(
                     f"trilat_low_conf:{device.address}:insufficient_anchors",
@@ -2456,10 +2557,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 residual_m=state.last_residual_m,
             )
             device.trilat_reason = "skip_unchanged_inputs"
+            self._set_trilat_quality_metrics(
+                device,
+                geometry_quality_01=state.last_geometry_quality_01,
+                residual_consistency_01=state.last_residual_consistency_01,
+                gdop=state.last_geometry_gdop,
+                condition_number=state.last_geometry_condition,
+                normalized_residual_rms=state.last_normalized_residual_rms,
+            )
             raw_confidence = self._compute_trilat_confidence(
                 anchor_count=anchor_count,
                 residual_m=state.last_residual_m,
                 solver_dimension=state.last_solver_dimension,
+                geometry_quality_01=state.last_geometry_quality_01,
+                residual_consistency_01=state.last_residual_consistency_01,
                 floor_ambiguous=floor_ambiguous_persisted,
                 mean_sigma_m=state.last_mean_sigma_m,
             )
@@ -2472,6 +2583,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     mobility_type=device.get_mobility_type(),
                     used_prior=False,
                     mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                    geometry_quality_01=state.last_geometry_quality_01,
+                    residual_consistency_01=state.last_residual_consistency_01,
                     floor_ambiguous=floor_ambiguous_persisted,
                 ),
             )
@@ -2541,11 +2654,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             used_prior = solve_prior is not None
             solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess_2d, prior=solve_prior)
 
+        quality_metrics = self._compute_trilat_quality_metrics(
+            anchors,
+            solver_dimension=solver_dimension,
+            x_m=solve_result.x_m,
+            y_m=solve_result.y_m,
+            z_m=solve_result.z_m,
+        )
+
         state.last_anchor_ids = anchor_ids
         state.last_anchor_ranges = anchor_ranges
         state.last_anchor_z = anchor_z
         state.last_solver_dimension = solver_dimension
         state.last_mean_sigma_m = mean_sigma_m
+        state.last_geometry_quality_01 = quality_metrics.geometry_quality_01
+        state.last_residual_consistency_01 = quality_metrics.residual_consistency_01
+        state.last_geometry_gdop = quality_metrics.gdop
+        state.last_geometry_condition = quality_metrics.condition_number
+        state.last_normalized_residual_rms = quality_metrics.normalized_residual_rms
 
         if (
             not solve_result.ok
@@ -2593,10 +2719,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             device.trilat_status = "low_confidence"
             device.trilat_reason = "high_residual_low_confidence"
+            self._set_trilat_quality_metrics(
+                device,
+                geometry_quality_01=quality_metrics.geometry_quality_01,
+                residual_consistency_01=quality_metrics.residual_consistency_01,
+                gdop=quality_metrics.gdop,
+                condition_number=quality_metrics.condition_number,
+                normalized_residual_rms=quality_metrics.normalized_residual_rms,
+            )
             raw_confidence = self._compute_trilat_confidence(
                 anchor_count=anchor_count,
                 residual_m=max(fallback_residual, self._TRILAT_MAX_RESIDUAL_M),
                 solver_dimension=solver_dimension,
+                geometry_quality_01=quality_metrics.geometry_quality_01,
+                residual_consistency_01=quality_metrics.residual_consistency_01,
                 floor_ambiguous=floor_ambiguous_persisted,
                 mean_sigma_m=mean_sigma_m,
             )
@@ -2609,6 +2745,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     mobility_type=device.get_mobility_type(),
                     used_prior=used_prior,
                     mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                    geometry_quality_01=quality_metrics.geometry_quality_01,
+                    residual_consistency_01=quality_metrics.residual_consistency_01,
                     floor_ambiguous=floor_ambiguous_persisted,
                 ),
             )
@@ -2649,6 +2787,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             anchor_count=anchor_count,
             residual_m=solve_result.residual_rms_m,
         )
+        self._set_trilat_quality_metrics(
+            device,
+            geometry_quality_01=quality_metrics.geometry_quality_01,
+            residual_consistency_01=quality_metrics.residual_consistency_01,
+            gdop=quality_metrics.gdop,
+            condition_number=quality_metrics.condition_number,
+            normalized_residual_rms=quality_metrics.normalized_residual_rms,
+        )
         state.last_solution_xy = filtered_xy
         state.last_solution_z = filtered_z if solver_dimension == "3d" or filtered_z is not None else None
         state.last_residual_m = solve_result.residual_rms_m
@@ -2657,6 +2803,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             anchor_count=anchor_count,
             residual_m=solve_result.residual_rms_m,
             solver_dimension=solver_dimension,
+            geometry_quality_01=quality_metrics.geometry_quality_01,
+            residual_consistency_01=quality_metrics.residual_consistency_01,
             floor_ambiguous=floor_ambiguous_persisted,
             mean_sigma_m=mean_sigma_m,
         )
@@ -2669,6 +2817,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 mobility_type=device.get_mobility_type(),
                 used_prior=used_prior,
                 mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                geometry_quality_01=quality_metrics.geometry_quality_01,
+                residual_consistency_01=quality_metrics.residual_consistency_01,
                 floor_ambiguous=floor_ambiguous_persisted,
             ),
         )

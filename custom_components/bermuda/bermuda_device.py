@@ -166,6 +166,11 @@ class BermudaDevice(dict):
         self.trilat_confidence_level: str = "low"
         self.trilat_tracking_confidence: float = 0.0
         self.trilat_tracking_confidence_level: str = "low"
+        self.trilat_geometry_quality: float = 0.0
+        self.trilat_residual_consistency: float = 0.0
+        self.trilat_geometry_gdop: float | None = None
+        self.trilat_geometry_condition: float | None = None
+        self.trilat_normalized_residual_rms: float | None = None
         self.trilat_horizontal_speed_mps: float | None = None
         self.trilat_vertical_speed_mps: float | None = None
         self.trilat_anchor_diagnostics: list[str] = []
@@ -799,6 +804,11 @@ class BermudaDevice(dict):
         self.trilat_confidence_level = "low"
         self.trilat_tracking_confidence = 0.0
         self.trilat_tracking_confidence_level = "low"
+        self.trilat_geometry_quality = 0.0
+        self.trilat_residual_consistency = 0.0
+        self.trilat_geometry_gdop = None
+        self.trilat_geometry_condition = None
+        self.trilat_normalized_residual_rms = None
         self.trilat_horizontal_speed_mps = None
         self.trilat_vertical_speed_mps = None
 

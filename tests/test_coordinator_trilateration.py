@@ -39,6 +39,13 @@ class _DummyDevice:
         self.trilat_residual_m = None
         self.trilat_confidence = 0.0
         self.trilat_confidence_level = "low"
+        self.trilat_tracking_confidence = 0.0
+        self.trilat_tracking_confidence_level = "low"
+        self.trilat_geometry_quality = 0.0
+        self.trilat_residual_consistency = 0.0
+        self.trilat_geometry_gdop = None
+        self.trilat_geometry_condition = None
+        self.trilat_normalized_residual_rms = None
         self.trilat_horizontal_speed_mps = None
         self.trilat_vertical_speed_mps = None
         self.area_id = None
@@ -62,6 +69,13 @@ class _DummyDevice:
         self.trilat_residual_m = None
         self.trilat_confidence = 0.0
         self.trilat_confidence_level = "low"
+        self.trilat_tracking_confidence = 0.0
+        self.trilat_tracking_confidence_level = "low"
+        self.trilat_geometry_quality = 0.0
+        self.trilat_residual_consistency = 0.0
+        self.trilat_geometry_gdop = None
+        self.trilat_geometry_condition = None
+        self.trilat_normalized_residual_rms = None
         self.trilat_horizontal_speed_mps = None
         self.trilat_vertical_speed_mps = None
 
@@ -825,6 +839,33 @@ def test_high_residual_yields_low_confidence_solution():
     assert device.trilat_reason == "high_residual_low_confidence"
     assert device.trilat_x_m is not None
     assert device.trilat_y_m is not None
+    assert device.trilat_geometry_quality >= 0.0
+    assert device.trilat_residual_consistency >= 0.0
+
+
+def test_successful_solve_populates_quality_metrics():
+    """Successful solves should populate geometry and residual quality diagnostics."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-quality")
+
+    sc_a = _make_scanner(coordinator, "q-a", "f1", 0.0, 0.0, z_m=0.0)
+    sc_b = _make_scanner(coordinator, "q-b", "f1", 6.0, 0.0, z_m=0.0)
+    sc_c = _make_scanner(coordinator, "q-c", "f1", 0.0, 8.0, z_m=0.0)
+
+    fresh = time.monotonic()
+    device.adverts = {
+        ("dev-quality", sc_a.address): _make_advert(sc_a, fresh, -70.0, 5.0),
+        ("dev-quality", sc_b.address): _make_advert(sc_b, fresh, -70.0, 5.0),
+        ("dev-quality", sc_c.address): _make_advert(sc_c, fresh, -70.0, 5.0),
+    }
+
+    coordinator._refresh_trilateration_for_device(device)
+
+    assert device.trilat_status == "ok"
+    assert device.trilat_geometry_quality > 0.0
+    assert device.trilat_residual_consistency > 0.0
+    assert device.trilat_geometry_gdop is not None
+    assert device.trilat_geometry_condition is not None
 
 
 def test_ambiguous_floor_yields_low_confidence_after_dwell():
