@@ -302,10 +302,15 @@ class BermudaDevice(dict):
             self._is_remote_scanner = True
         else:
             self._is_remote_scanner = False
-        self._coordinator.scanner_list_add(self)
 
         # Find the relevant device entries in HA for this scanner and apply the names, addresses etc
         self.async_as_scanner_resolve_device_entries()
+
+        # Announce scanner availability only after identity resolution has run.
+        # Per-scanner entities still gate on resolved scanner identity, so
+        # dispatching SIGNAL_SCANNERS_CHANGED earlier can leave entities
+        # permanently uncreated for this runtime.
+        self._coordinator.scanner_list_add(self)
 
         # Call the per-update processor as well, but only
         # if this is our first ha_scanner.
