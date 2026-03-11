@@ -503,6 +503,22 @@ class BermudaSensorTrackedDeviceAdvertStatus(BermudaSensor):
     ) -> None:
         super().__init__(coordinator, config_entry, scanner_address)
         self._tracked_device = coordinator.devices[tracked_address]
+        # Track the tracked device's name separately so we can detect renames.
+        # This entity lives on the scanner device, so the parent's _lastname only
+        # covers scanner renames; we need this for tracked-device renames.
+        self._tracked_lastname = self._tracked_device.name
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update, detecting both scanner and tracked-device renames."""
+        super()._handle_coordinator_update()
+        if self._tracked_device.name != self._tracked_lastname:
+            old_tracked_name = self._tracked_lastname
+            self._tracked_lastname = self._tracked_device.name
+            self._async_rename_entity_id(old_tracked_name, self._tracked_device.name)
+        # Fix stale scanner prefix: if the entity_id was renamed when the scanner
+        # device had a temporarily wrong name, correct it to match the current scanner name.
+        self._async_fix_stale_entity_id(self._device.name)
 
     def _status_entry(self) -> Mapping[str, Any] | None:
         statuses = getattr(self._tracked_device, "trilat_anchor_statuses", {})
