@@ -1498,7 +1498,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         stable_area_id = self._stable_area_id_for_topology(device)
         if classification.area_id is not None:
             if stable_area_id is not None and stable_area_id != classification.area_id:
-                required_dwell = self._room_switch_dwell_seconds(classification)
+                transition_strength = self._room_transition_strength(
+                    layout_hash=layout_hash,
+                    floor_id=device.trilat_floor_id,
+                    from_area_id=stable_area_id,
+                    to_area_id=classification.area_id,
+                )
+                required_dwell = self._room_switch_dwell_seconds(
+                    classification,
+                    transition_strength=transition_strength,
+                )
+                device.diag_area_switch += f" transition={transition_strength:.2f}"
                 if state.room_challenger_id != classification.area_id:
                     state.room_challenger_id = classification.area_id
                     state.room_challenger_since = nowstamp
@@ -1547,14 +1557,43 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     @staticmethod
-    def _room_switch_dwell_seconds(classification) -> float:
+    def _room_switch_dwell_seconds(classification, *, transition_strength: float = 1.0) -> float:
         """Return an evidence-based dwell for room switches."""
         margin = max(0.0, classification.best_score - classification.second_score)
         if classification.best_score >= 0.60 and margin >= 0.35:
-            return 1.5
-        if classification.best_score >= 0.40 and margin >= 0.20:
-            return 2.5
-        return 4.0
+            base = 1.5
+        elif classification.best_score >= 0.40 and margin >= 0.20:
+            base = 2.5
+        else:
+            base = 4.0
+
+        if transition_strength >= 0.65:
+            return base
+        if transition_strength >= 0.35:
+            return base + 1.5
+        return base + 3.0
+
+    def _room_transition_strength(
+        self,
+        *,
+        layout_hash: str,
+        floor_id: str | None,
+        from_area_id: str | None,
+        to_area_id: str | None,
+    ) -> float:
+        """Return soft plausibility for a room-to-room transition."""
+        classifier = self.room_classifier
+        strength_fn = getattr(classifier, "transition_strength", None)
+        if strength_fn is None:
+            return 1.0
+        return float(
+            strength_fn(
+                layout_hash=layout_hash,
+                floor_id=floor_id,
+                from_area_id=from_area_id,
+                to_area_id=to_area_id,
+            )
+        )
 
     @dataclass
     class TrilatMobilityPolicy:

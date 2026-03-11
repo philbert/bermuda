@@ -27,6 +27,7 @@ FINGERPRINT_SIGMA_DB = 7.0
 FINGERPRINT_MISSING_PENALTY_DB = 9.0
 FINGERPRINT_EXTRA_SCANNER_PENALTY_DB = 4.5
 FINGERPRINT_MIN_COMMON_SCANNERS = 2
+TRANSITION_GAP_SIGMA_M = 1.5
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class BermudaRoomClassifier:
         self._area_registry = area_registry
         self._layouts: dict[str, list[_SampleKernel]] = {}
         self._fingerprints: dict[str, list[_SampleFingerprint]] = {}
+        self._transition_strengths: dict[tuple[str, str | None, str, str], float] = {}
 
     async def async_rebuild(self) -> None:
         """Rebuild all room kernels from current calibration samples."""
@@ -130,6 +132,22 @@ class BermudaRoomClassifier:
                 )
         self._layouts = dict(layouts)
         self._fingerprints = dict(fingerprints)
+        self._transition_strengths = self._build_transition_strengths(layouts)
+
+    def transition_strength(
+        self,
+        *,
+        layout_hash: str,
+        floor_id: str | None,
+        from_area_id: str | None,
+        to_area_id: str | None,
+    ) -> float:
+        """Return soft transition plausibility between two rooms on a layout/floor."""
+        if not layout_hash or floor_id is None or not from_area_id or not to_area_id:
+            return 1.0
+        if from_area_id == to_area_id:
+            return 1.0
+        return self._transition_strengths.get((layout_hash, floor_id, from_area_id, to_area_id), 0.0)
 
     def has_trained_rooms(self, layout_hash: str, floor_id: str | None) -> bool:
         """Return whether trained rooms exist for a layout/floor pair."""
@@ -286,3 +304,46 @@ class BermudaRoomClassifier:
             scored_rooms[area_id] = sum(top_scores) / len(top_scores)
             topk_by_area[area_id] = len(top_scores)
         return scored_rooms, topk_by_area
+
+    def _build_transition_strengths(
+        self,
+        layouts: dict[str, list[_SampleKernel]],
+    ) -> dict[tuple[str, str | None, str, str], float]:
+        """Infer soft room-transition strengths from sample-cloud overlap/gap."""
+        strengths: dict[tuple[str, str | None, str, str], float] = {}
+        for layout_hash, samples in layouts.items():
+            by_floor_area: dict[tuple[str | None, str], list[_SampleKernel]] = defaultdict(list)
+            for sample in samples:
+                by_floor_area[(sample.floor_id, sample.area_id)].append(sample)
+
+            floor_ids = {floor_id for floor_id, _area_id in by_floor_area}
+            for floor_id in floor_ids:
+                areas = sorted(area_id for _floor, area_id in by_floor_area if _floor == floor_id)
+                for from_area_id in areas:
+                    from_samples = by_floor_area[(floor_id, from_area_id)]
+                    for to_area_id in areas:
+                        if from_area_id == to_area_id:
+                            continue
+                        to_samples = by_floor_area[(floor_id, to_area_id)]
+                        strength = self._pairwise_transition_strength(from_samples, to_samples)
+                        strengths[(layout_hash, floor_id, from_area_id, to_area_id)] = strength
+        return strengths
+
+    @staticmethod
+    def _pairwise_transition_strength(
+        from_samples: list[_SampleKernel],
+        to_samples: list[_SampleKernel],
+    ) -> float:
+        """Return soft plausibility that two sampled rooms can transition locally."""
+        best_strength = 0.0
+        for sample_a in from_samples:
+            for sample_b in to_samples:
+                dx = sample_a.x_m - sample_b.x_m
+                dy = sample_a.y_m - sample_b.y_m
+                dz = sample_a.z_m - sample_b.z_m
+                center_distance = math.sqrt((dx * dx) + (dy * dy) + (ROOM_KERNEL_Z_WEIGHT * dz * dz))
+                support_gap = max(0.0, center_distance - (sample_a.sigma_m + sample_b.sigma_m))
+                strength = math.exp(-0.5 * ((support_gap / TRANSITION_GAP_SIGMA_M) ** 2))
+                if strength > best_strength:
+                    best_strength = strength
+        return max(0.0, min(1.0, best_strength))

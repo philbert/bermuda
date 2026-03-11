@@ -410,6 +410,49 @@ def test_area_switch_requires_room_dwell_before_switching():
         assert device.area_id == "living_room"
 
 
+def test_area_switch_requires_extra_dwell_for_weak_transition():
+    """Room switches with weak learned transition support should hold longer."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-transition")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.62,
+            second_score=0.12,
+            topk_used=3,
+            geometry_score=0.41,
+            fingerprint_score=0.73,
+        ),
+        transition_strength=lambda **_kwargs: 0.2,
+    )
+
+    with patch("custom_components.bermuda.coordinator.monotonic_time_coarse", side_effect=[100.0, 102.0, 104.0, 104.6]):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+        assert "transition=0.20" in device.diag_area_switch
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "living_room"
+
+
 def test_trilat_ewma_resets_on_floor_change():
     """Switching floors must reset per-advert EWMA so stale cross-floor ranges are discarded."""
     coordinator = _make_coordinator()

@@ -279,3 +279,48 @@ async def test_fingerprint_score_breaks_geometry_tie() -> None:
     assert result.area_id == "living_room"
     assert result.reason == "ok"
     assert result.fingerprint_score > result.geometry_score
+
+
+@pytest.mark.asyncio
+async def test_transition_strength_prefers_nearby_rooms() -> None:
+    """Transition strength should be higher for nearby sample clouds than distant ones."""
+    classifier = BermudaRoomClassifier(
+        _FakeCalibration(
+            [
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "living_room",
+                    "position": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                },
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "bedroom",
+                    "position": {"x_m": 1.8, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                },
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "bedroom",
+                    "position": {"x_m": 8.0, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                },
+            ]
+        ),
+        _FakeAreaRegistry(),
+    )
+
+    await classifier.async_rebuild()
+
+    near_strength = classifier.transition_strength(
+        layout_hash="layout-a",
+        floor_id="ground",
+        from_area_id="living_room",
+        to_area_id="bedroom",
+    )
+
+    assert 0.0 <= near_strength <= 1.0
+    assert near_strength > 0.8
