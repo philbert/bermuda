@@ -66,6 +66,27 @@ def test_async_as_scanner_init(bermuda_scanner, mock_scanner):
     assert bermuda_scanner.is_remote_scanner is False
 
 
+def test_async_as_scanner_init_resolves_identity_before_scanner_list_add(bermuda_scanner, mock_remote_scanner):
+    """Scanner registration should happen after identity resolution."""
+    call_order: list[str] = []
+
+    def record_resolve() -> None:
+        call_order.append("resolve")
+
+    def record_add(device) -> None:
+        assert device is bermuda_scanner
+        call_order.append("add")
+
+    bermuda_scanner.async_as_scanner_resolve_device_entries = MagicMock(side_effect=record_resolve)
+    bermuda_scanner._coordinator.scanner_list_add = MagicMock(side_effect=record_add)
+
+    bermuda_scanner.async_as_scanner_init(mock_remote_scanner)
+
+    bermuda_scanner.async_as_scanner_resolve_device_entries.assert_called_once_with()
+    bermuda_scanner._coordinator.scanner_list_add.assert_called_once_with(bermuda_scanner)
+    assert call_order == ["resolve", "add"]
+
+
 def test_async_as_scanner_update(bermuda_scanner, mock_scanner):
     """Test async_as_scanner_update method."""
     bermuda_scanner.async_as_scanner_update(mock_scanner)
