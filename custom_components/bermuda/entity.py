@@ -8,9 +8,12 @@ from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.core import callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import slugify
 
 from .const import (
+    _LOGGER,
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     ATTRIBUTION,
@@ -48,7 +51,7 @@ class BermudaEntity(CoordinatorEntity):
         self._lastname = self._device.name  # So we can track when we get a new name
         self.ar = ar.async_get(coordinator.hass)
         self.dr = dr.async_get(coordinator.hass)
-        self.devreg_init_done = False
+        self.er = er.async_get(coordinator.hass)
 
         self.bermuda_update_interval = config_entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
         self.bermuda_last_state: Any = 0
@@ -89,15 +92,93 @@ class BermudaEntity(CoordinatorEntity):
 
         Any specific things we want to do during an update cycle
         """
-        if not self.devreg_init_done and self.device_entry:
-            self._device.name_by_user = self.device_entry.name_by_user
-            self.devreg_init_done = True
+        # For iBeacon and Private BLE devices, sync name_by_user from the HA device registry.
+        # This ensures that when a user renames an iBeacon via the HA UI, Bermuda picks it up.
+        # We only do this for device types that Bermuda "owns" — NOT for scanners, where
+        # name_by_user is set by the coordinator from the adjacent Shelly/ESPHome device.
+        # Note: self.device_entry is NOT reliably set during coordinator update callbacks
+        # (it's only updated via entity registry events). We look up the device directly instead.
+        if self._device.address_type in (ADDR_TYPE_IBEACON, ADDR_TYPE_PRIVATE_BLE_DEVICE):
+            current_dr_entry = None
+            if self.registry_entry and self.registry_entry.device_id:
+                current_dr_entry = self.dr.async_get(self.registry_entry.device_id)
+            if current_dr_entry:
+                current_name_by_user = current_dr_entry.name_by_user
+                if current_name_by_user != self._device.name_by_user:
+                    self._device.name_by_user = current_name_by_user
+                    self._device.make_name()
         if self._device.name != self._lastname:
+            old_name = self._lastname
             self._lastname = self._device.name
-            if self.device_entry:
-                # We have a new name locally, so let's update the device registry.
-                self.dr.async_update_device(self.device_entry.id, name=self._device.name)
+            # Rename entity_id to match the new device name, if it was auto-generated.
+            self._async_rename_entity_id(old_name, self._device.name)
         self.async_write_ha_state()
+
+    def _async_rename_entity_id(self, old_name: str, new_name: str) -> None:
+        """
+        Rename this entity's entity_id by replacing old_name's slug with new_name's slug.
+
+        Only acts if the entity_id contains old_name's slug (meaning it was auto-generated
+        from that name). User-customised entity_ids that don't contain the old slug are left alone.
+        """
+        if not self.entity_id:
+            return
+        old_slug = slugify(old_name)
+        new_slug = slugify(new_name)
+        if old_slug == new_slug or old_slug not in self.entity_id:
+            return
+        platform, _, old_id_part = self.entity_id.partition(".")
+        new_id_part = old_id_part.replace(old_slug, new_slug, 1)
+        if new_id_part == old_id_part:
+            return
+        new_entity_id = f"{platform}.{new_id_part}"
+        _LOGGER.debug(
+            "Bermuda: renaming entity_id from %s to %s",
+            self.entity_id,
+            new_entity_id,
+        )
+        try:
+            self.er.async_update_entity(self.entity_id, new_entity_id=new_entity_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Could not rename entity_id from %s to %s: %s",
+                self.entity_id,
+                new_entity_id,
+                err,
+            )
+
+    def _async_fix_stale_entity_id(self, device_name: str) -> None:
+        """
+        Fix an entity_id whose device-name prefix has become stale.
+
+        Checks if the entity_id ends with the expected entity-name slug but has the
+        wrong device-name prefix. If so, renames to {device_slug}_{entity_slug}.
+
+        This handles recovery from cases where the entity_id was renamed while the
+        device had a temporarily incorrect name.
+        """
+        if not self.entity_id or not device_name:
+            return
+        device_slug = slugify(device_name)
+        entity_name_slug = slugify(self.name)
+        platform, _, id_part = self.entity_id.partition(".")
+        expected_id_part = f"{device_slug}_{entity_name_slug}"
+        if id_part.endswith(f"_{entity_name_slug}") and id_part != expected_id_part:
+            new_entity_id = f"{platform}.{expected_id_part}"
+            _LOGGER.debug(
+                "Bermuda: fixing stale entity_id from %s to %s",
+                self.entity_id,
+                new_entity_id,
+            )
+            try:
+                self.er.async_update_entity(self.entity_id, new_entity_id=new_entity_id)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Could not fix stale entity_id from %s to %s: %s",
+                    self.entity_id,
+                    new_entity_id,
+                    err,
+                )
 
     @property
     def unique_id(self):
