@@ -6,7 +6,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from custom_components.bermuda.const import DISTANCE_TIMEOUT
+from custom_components.bermuda.const import (
+    CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS,
+    DISTANCE_TIMEOUT,
+)
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.room_classifier import RoomClassification
 
@@ -276,6 +279,114 @@ def test_floor_diagnostics_capture_evidence_and_cross_floor_candidates():
     assert status_entry["soft_include_eligible"] is True
     assert status_entry["soft_include_sigma_m"] > 0.0
     assert any("soft_sigma=" in line for line in device.trilat_cross_floor_anchor_diagnostics)
+
+
+def test_phase2_soft_includes_other_floor_anchors_when_enabled():
+    """Phase-2 flag should let a wrong-floor anchor participate in the solve."""
+    coordinator = _make_coordinator()
+    coordinator.options[CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS] = True
+    device = _DummyDevice("dev-phase2-soft")
+
+    sc_a = _make_scanner(coordinator, "p2-a", "f1", 0.0, 0.0)
+    sc_b = _make_scanner(coordinator, "p2-b", "f1", 6.0, 0.0)
+    sc_c = _make_scanner(coordinator, "p2-c", "f2", 0.0, 8.0)
+
+    fresh = time.monotonic()
+    device.adverts = {
+        ("dev-phase2-soft", sc_a.address): _make_advert(sc_a, fresh, -70.0, 5.0),
+        ("dev-phase2-soft", sc_b.address): _make_advert(sc_b, fresh, -70.0, 5.0),
+        ("dev-phase2-soft", sc_c.address): _make_advert(sc_c, fresh, -70.0, 5.0),
+    }
+
+    coordinator._refresh_trilateration_for_device(device)
+
+    assert device.trilat_status == "ok"
+    assert device.trilat_anchor_count == 3
+    status_entry = device.trilat_anchor_statuses["p2-c"]
+    assert status_entry["status"] == "rejected_wrong_floor"
+    assert status_entry["soft_include_active"] is True
+    assert status_entry["affects_position"] is True
+    assert any("soft_included" in line for line in device.trilat_cross_floor_anchor_diagnostics)
+
+
+def test_phase2_keeps_mean_sigma_and_z_bounds_same_floor_only():
+    """Phase-2 should exclude other-floor anchors from confidence sigma and z bounds."""
+    coordinator = _make_coordinator()
+    coordinator.options[CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS] = True
+    device = _DummyDevice("dev-phase2-bounds")
+
+    sc_a = _make_scanner(coordinator, "p2b-a", "f1", 0.0, 0.0, z_m=0.0)
+    sc_b = _make_scanner(coordinator, "p2b-b", "f1", 6.0, 0.0, z_m=0.0)
+    sc_c = _make_scanner(coordinator, "p2b-c", "f1", 0.0, 8.0, z_m=0.0)
+    sc_d = _make_scanner(coordinator, "p2b-d", "f2", 6.0, 8.0, z_m=10.0)
+
+    fresh = time.monotonic()
+    adv_a = _make_advert(sc_a, fresh, -70.0, 5.0)
+    adv_b = _make_advert(sc_b, fresh, -70.0, 5.0)
+    adv_c = _make_advert(sc_c, fresh, -70.0, 5.0)
+    adv_d = _make_advert(sc_d, fresh, -70.0, 9.0)
+    adv_d.rssi_distance_sigma_m = 20.0
+    device.adverts = {
+        ("dev-phase2-bounds", sc_a.address): adv_a,
+        ("dev-phase2-bounds", sc_b.address): adv_b,
+        ("dev-phase2-bounds", sc_c.address): adv_c,
+        ("dev-phase2-bounds", sc_d.address): adv_d,
+    }
+
+    with patch.object(coordinator, "_apply_trilat_motion_filter", wraps=coordinator._apply_trilat_motion_filter) as motion_filter:
+        coordinator._refresh_trilateration_for_device(device)
+
+    call_kwargs = motion_filter.call_args.kwargs
+    assert abs(call_kwargs["mean_sigma_m"] - 0.8) < 1e-6
+    assert call_kwargs["anchor_z_bounds"] == (0.0, 0.0)
+    assert device.trilat_anchor_count == 4
+
+
+def test_phase2_clears_anchor_ewma_when_floor_role_changes():
+    """Changing an anchor from same-floor to other-floor should reset its EWMA range."""
+    coordinator = _make_coordinator()
+    coordinator.options[CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS] = True
+    device = _DummyDevice("dev-phase2-ewma")
+
+    sc_a = _make_scanner(coordinator, "p2e-a", "f1", 0.0, 0.0, z_m=0.0)
+    sc_b = _make_scanner(coordinator, "p2e-b", "f1", 6.0, 0.0, z_m=0.0)
+    sc_c = _make_scanner(coordinator, "p2e-c", "f1", 0.0, 8.0, z_m=0.0)
+    sc_d = _make_scanner(coordinator, "p2e-d", "f2", 0.0, 0.0)
+    sc_e = _make_scanner(coordinator, "p2e-e", "f2", 6.0, 0.0)
+    sc_f = _make_scanner(coordinator, "p2e-f", "f2", 0.0, 8.0)
+
+    fresh = time.monotonic()
+    adv_a = _make_advert(sc_a, fresh, -60.0, 5.0)
+    adv_b = _make_advert(sc_b, fresh, -60.0, 5.0)
+    adv_c = _make_advert(sc_c, fresh, -60.0, 5.0)
+    adv_d = _make_advert(sc_d, fresh, -60.0, 5.0)
+    adv_e = _make_advert(sc_e, fresh, -60.0, 5.0)
+    adv_f = _make_advert(sc_f, fresh, -60.0, 5.0)
+
+    device.adverts = {
+        ("dev-phase2-ewma", sc_a.address): adv_a,
+        ("dev-phase2-ewma", sc_b.address): adv_b,
+        ("dev-phase2-ewma", sc_c.address): adv_c,
+    }
+    coordinator._refresh_trilateration_for_device(device)
+    assert adv_a.trilat_range_ewma_m == 5.0
+
+    adv_a.rssi_distance_raw = 7.0
+    adv_a.rssi_distance = 7.0
+    device.adverts = {
+        ("dev-phase2-ewma", sc_a.address): adv_a,
+        ("dev-phase2-ewma", sc_d.address): adv_d,
+        ("dev-phase2-ewma", sc_e.address): adv_e,
+        ("dev-phase2-ewma", sc_f.address): adv_f,
+    }
+    state = coordinator._get_trilat_decision_state(device)
+    state.floor_challenger_id = "f2"
+    state.floor_challenger_since = time.monotonic() - 100.0
+
+    coordinator._refresh_trilateration_for_device(device)
+
+    assert state.floor_id == "f2"
+    assert adv_a.trilat_range_ewma_m == 7.0
 
 
 def test_anchor_qualification_requires_valid_coordinates():
