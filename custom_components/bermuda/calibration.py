@@ -55,9 +55,10 @@ class _AnchorObservationAccumulator:
 
 
 @dataclass
-class _CalibrationSession:
-    """Active calibration capture session."""
+class _CaptureSession:
+    """Active calibration or transition capture session."""
 
+    session_type: str
     session_id: str
     started_at: str
     started_monotonic: float
@@ -67,9 +68,12 @@ class _CalibrationSession:
     device_address: str
     room_area_id: str
     room_name: str
+    room_floor_id: str | None
     position: dict[str, float]
     sample_radius_m: float
-    notes: str | None
+    notes: str | None = None
+    transition_name: str | None = None
+    transition_floor_ids: list[str] = field(default_factory=list)
     anchors: dict[str, _AnchorObservationAccumulator] = field(default_factory=dict)
 
 
@@ -86,7 +90,7 @@ class BermudaCalibrationManager:
         self.hass = hass
         self._coordinator = coordinator
         self._store = store
-        self._sessions: dict[str, _CalibrationSession] = {}
+        self._sessions: dict[str, _CaptureSession] = {}
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
         self._change_callbacks: list = []
 
@@ -377,124 +381,18 @@ class BermudaCalibrationManager:
         capture_duration_s: int = 60,
         transition_floor_ids: list[str],
     ) -> dict[str, Any]:
-        """Store one Bermuda-native transition sample."""
-        await self._store.async_ensure_loaded()
-        if sample_radius_m <= 0:
-            raise HomeAssistantError("Transition sample radius must be greater than 0 metres.")
-        if capture_duration_s < 1:
-            raise HomeAssistantError("Transition capture duration must be at least 1 second.")
-
-        device = self._resolve_device_from_registry_id(device_id)
-        if device is None:
-            raise HomeAssistantError("Selected device is not currently available in Bermuda.")
-
-        area = self._coordinator.ar.async_get_area(room_area_id)
-        if area is None:
-            raise HomeAssistantError("Selected room area does not exist.")
-        if area.floor_id is None:
-            raise HomeAssistantError("Transition samples require the room area to belong to a floor.")
-
-        cleaned_name = str(transition_name).strip()
-        if not cleaned_name:
-            raise HomeAssistantError("transition_name must not be empty.")
-
-        cleaned_floor_ids = self._normalize_transition_floor_ids(
+        """Backward-compatible wrapper for transition-session capture."""
+        return await self.async_start_transition_session(
+            device_id=device_id,
+            room_area_id=room_area_id,
+            transition_name=transition_name,
+            x_m=x_m,
+            y_m=y_m,
+            z_m=z_m,
+            sample_radius_m=sample_radius_m,
+            capture_duration_s=capture_duration_s,
             transition_floor_ids=transition_floor_ids,
-            room_floor_id=area.floor_id,
         )
-        if not cleaned_floor_ids:
-            raise HomeAssistantError("transition_floor_ids must include at least one floor other than the room floor.")
-
-        notification_id = f"bermuda_transition_{uuid4().hex[:12]}"
-        self._update_transition_notification(
-            notification_id=notification_id,
-            device_name=device.name,
-            room_name=area.name,
-            room_floor_id=area.floor_id,
-            transition_name=cleaned_name,
-            x_m=float(x_m),
-            y_m=float(y_m),
-            z_m=float(z_m),
-            sample_radius_m=float(sample_radius_m),
-            capture_duration_s=int(capture_duration_s),
-            transition_floor_ids=cleaned_floor_ids,
-            status="started",
-        )
-
-        try:
-            created_at = now().isoformat()
-            layout_hash = self.current_anchor_layout_hash
-            transition_samples = self.transition_samples()
-            stored = {
-                "id": f"transition_sample_{uuid4().hex[:12]}",
-                "created_at": created_at,
-                "updated_at": created_at,
-                "device_id": device_id,
-                "device_name": device.name,
-                "device_address": device.address,
-                "room_area_id": room_area_id,
-                "room_name": area.name,
-                "room_floor_id": area.floor_id,
-                "transition_name": cleaned_name,
-                "position": {"x_m": float(x_m), "y_m": float(y_m), "z_m": float(z_m)},
-                "sample_radius_m": float(sample_radius_m),
-                "transition_floor_ids": cleaned_floor_ids,
-                "anchor_layout_hash": layout_hash,
-                "capture_duration_s": int(capture_duration_s),
-            }
-            transition_samples.append(stored)
-            await self._store.async_replace_transition_samples(transition_samples)
-        except Exception as err:
-            self._update_transition_notification(
-                notification_id=notification_id,
-                device_name=device.name,
-                room_name=area.name,
-                room_floor_id=area.floor_id,
-                transition_name=cleaned_name,
-                x_m=float(x_m),
-                y_m=float(y_m),
-                z_m=float(z_m),
-                sample_radius_m=float(sample_radius_m),
-                capture_duration_s=int(capture_duration_s),
-                transition_floor_ids=cleaned_floor_ids,
-                status="failed",
-                failure_reason=str(err),
-            )
-            raise
-
-        self._update_transition_notification(
-            notification_id=notification_id,
-            device_name=device.name,
-            room_name=area.name,
-            room_floor_id=area.floor_id,
-            transition_name=cleaned_name,
-            x_m=float(stored["position"]["x_m"]),
-            y_m=float(stored["position"]["y_m"]),
-            z_m=float(stored["position"]["z_m"]),
-            sample_radius_m=float(stored["sample_radius_m"]),
-            capture_duration_s=int(capture_duration_s),
-            transition_floor_ids=list(stored["transition_floor_ids"]),
-            status="stored",
-        )
-
-        return {
-            "id": stored["id"],
-            "created_at": stored["created_at"],
-            "updated_at": stored["updated_at"],
-            "merged": False,
-            "device_id": device_id,
-            "room_area_id": room_area_id,
-            "room_name": area.name,
-            "room_floor_id": area.floor_id,
-            "transition_name": cleaned_name,
-            "x_m": float(stored["position"]["x_m"]),
-            "y_m": float(stored["position"]["y_m"]),
-            "z_m": float(stored["position"]["z_m"]),
-            "sample_radius_m": float(stored["sample_radius_m"]),
-            "capture_duration_s": int(capture_duration_s),
-            "transition_floor_ids": list(stored["transition_floor_ids"]),
-            "anchor_layout_hash": layout_hash,
-        }
 
     async def async_start_session(
         self,
@@ -520,14 +418,15 @@ class BermudaCalibrationManager:
             raise HomeAssistantError("Selected device is not currently available in Bermuda.")
 
         if any(session.device_id == device_id for session in self._sessions.values()):
-            raise HomeAssistantError("A calibration session is already running for that device.")
+            raise HomeAssistantError("A capture session is already running for that device.")
 
         area = self._coordinator.ar.async_get_area(room_area_id)
         if area is None:
             raise HomeAssistantError("Selected room area does not exist.")
 
         started_dt = now()
-        session = _CalibrationSession(
+        session = _CaptureSession(
+            session_type="calibration",
             session_id=f"cal_{uuid4().hex[:12]}",
             started_at=started_dt.isoformat(),
             started_monotonic=monotonic_time_coarse(),
@@ -537,19 +436,12 @@ class BermudaCalibrationManager:
             device_address=device.address,
             room_area_id=room_area_id,
             room_name=area.name,
+            room_floor_id=area.floor_id,
             position={"x_m": float(x_m), "y_m": float(y_m), "z_m": float(z_m)},
             sample_radius_m=float(sample_radius_m),
             notes=notes,
         )
-        self._sessions[session.session_id] = session
-        self._update_session_notification(
-            session,
-            status="started",
-            expected_complete_at=(started_dt + timedelta(seconds=duration_s)).isoformat(),
-        )
-        task = asyncio.create_task(self._async_wait_and_finalize(session.session_id))
-        self._session_tasks[session.session_id] = task
-        task.add_done_callback(lambda _task, session_id=session.session_id: self._session_tasks.pop(session_id, None))
+        expected_complete_at = self._register_session(session)
         return {
             "session_id": session.session_id,
             "started_at": session.started_at,
@@ -560,8 +452,109 @@ class BermudaCalibrationManager:
             "z_m": float(z_m),
             "sample_radius_m": float(sample_radius_m),
             "duration_s": duration_s,
-            "expected_complete_at": (started_dt + timedelta(seconds=duration_s)).isoformat(),
+            "expected_complete_at": expected_complete_at,
         }
+
+    async def async_start_transition_session(
+        self,
+        *,
+        device_id: str,
+        room_area_id: str,
+        transition_name: str,
+        x_m: float,
+        y_m: float,
+        z_m: float,
+        sample_radius_m: float = DEFAULT_SAMPLE_RADIUS_M,
+        capture_duration_s: int = 60,
+        transition_floor_ids: list[str],
+    ) -> dict[str, Any]:
+        """Validate and start a transition sample capture session."""
+        await self._store.async_ensure_loaded()
+        if sample_radius_m <= 0:
+            raise HomeAssistantError("Transition sample radius must be greater than 0 metres.")
+        if capture_duration_s < 1:
+            raise HomeAssistantError("Transition capture duration must be at least 1 second.")
+
+        device = self._resolve_device_from_registry_id(device_id)
+        if device is None:
+            raise HomeAssistantError("Selected device is not currently available in Bermuda.")
+
+        if any(session.device_id == device_id for session in self._sessions.values()):
+            raise HomeAssistantError("A capture session is already running for that device.")
+
+        area = self._coordinator.ar.async_get_area(room_area_id)
+        if area is None:
+            raise HomeAssistantError("Selected room area does not exist.")
+        if area.floor_id is None:
+            raise HomeAssistantError("Transition samples require the room area to belong to a floor.")
+
+        cleaned_name = str(transition_name).strip()
+        if not cleaned_name:
+            raise HomeAssistantError("transition_name must not be empty.")
+
+        cleaned_floor_ids = self._normalize_transition_floor_ids(
+            transition_floor_ids=transition_floor_ids,
+            room_floor_id=area.floor_id,
+        )
+        if not cleaned_floor_ids:
+            raise HomeAssistantError("transition_floor_ids must include at least one floor other than the room floor.")
+
+        started_dt = now()
+        session = _CaptureSession(
+            session_type="transition",
+            session_id=f"transition_{uuid4().hex[:12]}",
+            started_at=started_dt.isoformat(),
+            started_monotonic=monotonic_time_coarse(),
+            duration_s=capture_duration_s,
+            device_id=device_id,
+            device_name=device.name,
+            device_address=device.address,
+            room_area_id=room_area_id,
+            room_name=area.name,
+            room_floor_id=area.floor_id,
+            position={"x_m": float(x_m), "y_m": float(y_m), "z_m": float(z_m)},
+            sample_radius_m=float(sample_radius_m),
+            transition_name=cleaned_name,
+            transition_floor_ids=cleaned_floor_ids,
+        )
+        expected_complete_at = self._register_session(session)
+        return {
+            "session_id": session.session_id,
+            "started_at": session.started_at,
+            "device_id": device_id,
+            "room_area_id": room_area_id,
+            "room_name": area.name,
+            "room_floor_id": area.floor_id,
+            "transition_name": cleaned_name,
+            "x_m": float(x_m),
+            "y_m": float(y_m),
+            "z_m": float(z_m),
+            "sample_radius_m": float(sample_radius_m),
+            "capture_duration_s": capture_duration_s,
+            "transition_floor_ids": cleaned_floor_ids,
+            "expected_complete_at": expected_complete_at,
+        }
+
+    def _register_session(self, session: _CaptureSession) -> str:
+        """Track and schedule one active capture session."""
+        expected_complete_at = (now() + timedelta(seconds=session.duration_s)).isoformat()
+        self._sessions[session.session_id] = session
+        if session.session_type == "transition":
+            self._update_transition_session_notification(
+                session,
+                status="started",
+                expected_complete_at=expected_complete_at,
+            )
+        else:
+            self._update_session_notification(
+                session,
+                status="started",
+                expected_complete_at=expected_complete_at,
+            )
+        task = asyncio.create_task(self._async_wait_and_finalize(session.session_id))
+        self._session_tasks[session.session_id] = task
+        task.add_done_callback(lambda _task, session_id=session.session_id: self._session_tasks.pop(session_id, None))
+        return expected_complete_at
 
     async def _async_wait_and_finalize(self, session_id: str) -> None:
         """Sleep until the capture window ends, then finalize."""
@@ -652,7 +645,7 @@ class BermudaCalibrationManager:
 
     def _record_observation(
         self,
-        session: _CalibrationSession,
+        session: _CaptureSession,
         advert: BermudaAdvert,
         observed_at: str,
         nowstamp: float,
@@ -693,15 +686,40 @@ class BermudaCalibrationManager:
             return
 
         if failure_reason is not None:
-            self._emit_completion_event(
-                session=session,
-                sample_id=None,
-                quality_status="failed",
-                quality_reason=failure_reason,
+            if session.session_type == "transition":
+                self._update_transition_session_notification(
+                    session,
+                    status="failed",
+                    quality_reason=failure_reason,
+                )
+            else:
+                self._emit_completion_event(
+                    session=session,
+                    sample_id=None,
+                    quality_status="failed",
+                    quality_reason=failure_reason,
+                )
+            return
+
+        if session.session_type == "transition":
+            sample = self._build_transition_sample(session)
+            quality = sample["quality"]
+            sample_id: str | None = None
+            if quality["status"] in {CALIBRATION_QUALITY_ACCEPTED, CALIBRATION_QUALITY_POOR}:
+                transition_samples = self.transition_samples()
+                transition_samples.append(sample)
+                await self._store.async_replace_transition_samples(transition_samples)
+                sample_id = sample["id"]
+                await self._async_notify_changed()
+            self._update_transition_session_notification(
+                session,
+                status=quality["status"],
+                sample_id=sample_id,
+                quality_reason=quality["reason"],
             )
             return
 
-        sample = self._build_sample(session)
+        sample = self._build_calibration_sample(session)
         quality = sample["quality"]
         sample_id: str | None = None
         if quality["status"] in {CALIBRATION_QUALITY_ACCEPTED, CALIBRATION_QUALITY_POOR}:
@@ -715,8 +733,8 @@ class BermudaCalibrationManager:
             quality_reason=quality["reason"],
         )
 
-    def _build_sample(self, session: _CalibrationSession) -> dict[str, Any]:
-        """Build the persisted sample payload for a completed session."""
+    def _build_capture_quality(self, session: _CaptureSession) -> dict[str, Any]:
+        """Build shared anchor and quality payload for a completed capture session."""
         created_at = now().isoformat()
         anchors: dict[str, Any] = {}
         eligible_anchor_count = 0
@@ -834,19 +852,7 @@ class BermudaCalibrationManager:
         )
 
         return {
-            "id": f"sample_{uuid4().hex[:12]}",
             "created_at": created_at,
-            "started_at": session.started_at,
-            "duration_s": session.duration_s,
-            "device_id": session.device_id,
-            "device_name": session.device_name,
-            "device_address": session.device_address,
-            "room_area_id": session.room_area_id,
-            "room_name": session.room_name,
-            "position": deepcopy(session.position),
-            "sample_radius_m": session.sample_radius_m,
-            "anchor_layout_hash": self.current_anchor_layout_hash,
-            "notes": session.notes,
             "anchors": anchors,
             "quality": {
                 "status": quality_status,
@@ -861,6 +867,51 @@ class BermudaCalibrationManager:
                 "geometry_gdop": round(float(geometry_gdop), 3) if geometry_gdop is not None else None,
                 "reason": quality_reason,
             },
+        }
+
+    def _build_calibration_sample(self, session: _CaptureSession) -> dict[str, Any]:
+        """Build the persisted calibration-sample payload for a completed session."""
+        shared = self._build_capture_quality(session)
+        return {
+            "id": f"sample_{uuid4().hex[:12]}",
+            "created_at": shared["created_at"],
+            "started_at": session.started_at,
+            "duration_s": session.duration_s,
+            "device_id": session.device_id,
+            "device_name": session.device_name,
+            "device_address": session.device_address,
+            "room_area_id": session.room_area_id,
+            "room_name": session.room_name,
+            "position": deepcopy(session.position),
+            "sample_radius_m": session.sample_radius_m,
+            "anchor_layout_hash": self.current_anchor_layout_hash,
+            "notes": session.notes,
+            "anchors": shared["anchors"],
+            "quality": shared["quality"],
+        }
+
+    def _build_transition_sample(self, session: _CaptureSession) -> dict[str, Any]:
+        """Build the persisted transition-sample payload for a completed session."""
+        shared = self._build_capture_quality(session)
+        return {
+            "id": f"transition_sample_{uuid4().hex[:12]}",
+            "created_at": shared["created_at"],
+            "updated_at": shared["created_at"],
+            "started_at": session.started_at,
+            "capture_duration_s": session.duration_s,
+            "device_id": session.device_id,
+            "device_name": session.device_name,
+            "device_address": session.device_address,
+            "room_area_id": session.room_area_id,
+            "room_name": session.room_name,
+            "room_floor_id": session.room_floor_id,
+            "transition_name": session.transition_name,
+            "position": deepcopy(session.position),
+            "sample_radius_m": session.sample_radius_m,
+            "transition_floor_ids": list(session.transition_floor_ids),
+            "anchor_layout_hash": self.current_anchor_layout_hash,
+            "anchors": shared["anchors"],
+            "quality": shared["quality"],
         }
 
     @staticmethod
@@ -1037,7 +1088,7 @@ class BermudaCalibrationManager:
     def _emit_completion_event(
         self,
         *,
-        session: _CalibrationSession,
+        session: _CaptureSession,
         sample_id: str | None,
         quality_status: str,
         quality_reason: str | None,
@@ -1063,7 +1114,7 @@ class BermudaCalibrationManager:
 
     def _update_session_notification(
         self,
-        session: _CalibrationSession,
+        session: _CaptureSession,
         *,
         status: str,
         expected_complete_at: str | None = None,
@@ -1107,44 +1158,54 @@ class BermudaCalibrationManager:
             notification_id=f"bermuda_calibration_{session.session_id}",
         )
 
-    def _update_transition_notification(
+    def _update_transition_session_notification(
         self,
+        session: _CaptureSession,
         *,
-        notification_id: str,
-        device_name: str,
-        room_name: str,
-        room_floor_id: str | None,
-        transition_name: str,
-        x_m: float,
-        y_m: float,
-        z_m: float,
-        sample_radius_m: float,
-        capture_duration_s: int,
-        transition_floor_ids: list[str],
         status: str,
-        failure_reason: str | None = None,
+        expected_complete_at: str | None = None,
+        sample_id: str | None = None,
+        quality_reason: str | None = None,
     ) -> None:
-        """Create or update the persistent notification for one transition sample capture."""
-        room_floor_name = self._floor_name_for_id(room_floor_id)
-        transition_floor_names = ", ".join(self._floor_name_for_id(floor_id) for floor_id in transition_floor_ids)
+        """Create or update the persistent notification for one transition session."""
+        room_floor_name = self._floor_name_for_id(session.room_floor_id)
+        transition_floor_names = ", ".join(self._floor_name_for_id(floor_id) for floor_id in session.transition_floor_ids)
         message = (
-            f"Device: {device_name}\n"
-            f"Room: {room_name}\n"
+            f"Device: {session.device_name}\n"
+            f"Room: {session.room_name}\n"
             f"Room floor: {room_floor_name}\n"
-            f"Transition: {transition_name}\n"
-            f"Position: x={x_m:.3f}, y={y_m:.3f}, z={z_m:.3f}\n"
-            f"Radius: {sample_radius_m:.3f} m\n"
-            f"Capture duration: {capture_duration_s} s\n"
+            f"Transition: {session.transition_name or 'unknown'}\n"
+            f"Position: x={session.position['x_m']:.3f}, y={session.position['y_m']:.3f}, z={session.position['z_m']:.3f}\n"
+            f"Radius: {session.sample_radius_m:.3f} m\n"
+            f"Capture duration: {session.duration_s} s\n"
             f"Transition floors: {transition_floor_names or 'none'}\n"
             f"Status: {status}"
         )
-        if failure_reason is not None:
-            message += f"\nReason: {failure_reason}"
+        if expected_complete_at is not None:
+            message += f"\nExpected complete at: {expected_complete_at}"
+        if sample_id is not None:
+            message += f"\nSample ID: {sample_id or 'not_saved'}"
+        if sample_id is not None and status != "started":
+            sample = next((stored for stored in self.transition_samples() if stored.get("id") == sample_id), None)
+            if sample is not None:
+                quality = sample.get("quality") or {}
+                message += (
+                    f"\nQuality: {quality.get('level', 'unknown')} "
+                    f"(status={quality.get('status', 'unknown')}, score={float(quality.get('score_01', 0.0)):.2f})"
+                )
+                message += (
+                    f"\nQuality details: anchors={int(quality.get('eligible_anchor_count', 0))}, "
+                    f"packets={int(quality.get('total_packet_count', 0))}, "
+                    f"median_mad={float(quality.get('median_rssi_mad_db', 0.0)):.2f} dB, "
+                    f"geometry={float(quality.get('geometry_quality_01', 0.0)):.2f}"
+                )
+        if quality_reason is not None:
+            message += f"\nReason: {quality_reason}"
         persistent_notification.async_create(
             self.hass,
             message,
             title="Bermuda transition sample",
-            notification_id=notification_id,
+            notification_id=f"bermuda_transition_{session.session_id}",
         )
 
     def _floor_name_for_id(self, floor_id: str | None) -> str:
