@@ -12,8 +12,11 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.bermuda.config_flow import BermudaOptionsFlowHandler
-from custom_components.bermuda.const import DOMAIN
-from custom_components.bermuda.const import NAME
+from custom_components.bermuda.const import (
+    CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS,
+    DOMAIN,
+    NAME,
+)
 
 # from .const import MOCK_OPTIONS
 from .const import MOCK_CONFIG
@@ -70,8 +73,28 @@ async def test_options_flow(hass: HomeAssistant, setup_bermuda_entry: MockConfig
     assert result.get("step_id") == "init"
     assert result.get("menu_options") == {
         "selectdevices": "Select Devices",
+        "experimental": "Experimental",
         "calibration_samples": "Calibration Samples",
     }
+
+
+async def test_options_flow_experimental_toggle(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry):
+    """Experimental options should persist the Phase-2 soft anchor flag."""
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"next_step_id": "experimental"},
+    )
+    assert result.get("type") == FlowResultType.FORM
+    assert result.get("step_id") == "experimental"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS: True},
+    )
+
+    assert result.get("type") == FlowResultType.CREATE_ENTRY
+    assert result.get("data")[CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS] is True
 
 
 async def test_calibration_samples_options_flow_clear_room(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry):
