@@ -340,6 +340,43 @@ def test_phase2_keeps_mean_sigma_and_z_bounds_same_floor_only():
     assert abs(call_kwargs["mean_sigma_m"] - 0.8) < 1e-6
     assert call_kwargs["anchor_z_bounds"] == (0.0, 0.0)
     assert device.trilat_anchor_count == 4
+    assert device.trilat_z_m == 0.0
+
+
+def test_phase2_cross_floor_xy_inclusion_preserves_same_floor_z():
+    """Other-floor soft inclusion should not drag z away from a solvable same-floor 3D result."""
+    coordinator = _make_coordinator()
+    coordinator.options[CONF_TRILAT_SOFT_INCLUDE_OTHER_FLOOR_ANCHORS] = True
+    device = _DummyDevice("dev-phase2-z")
+
+    sc_a = _make_scanner(coordinator, "p2z-a", "f1", 0.0, 0.0, z_m=0.0)
+    sc_b = _make_scanner(coordinator, "p2z-b", "f1", 6.0, 0.0, z_m=0.0)
+    sc_c = _make_scanner(coordinator, "p2z-c", "f1", 0.0, 8.0, z_m=0.0)
+    sc_d = _make_scanner(coordinator, "p2z-d", "f1", 0.0, 0.0, z_m=2.0)
+    sc_e = _make_scanner(coordinator, "p2z-e", "f2", 6.0, 8.0, z_m=10.0)
+
+    fresh = time.monotonic()
+    dist_same_floor = 26.0**0.5
+    adv_a = _make_advert(sc_a, fresh, -60.0, dist_same_floor)
+    adv_b = _make_advert(sc_b, fresh, -60.0, dist_same_floor)
+    adv_c = _make_advert(sc_c, fresh, -60.0, dist_same_floor)
+    adv_d = _make_advert(sc_d, fresh, -60.0, dist_same_floor)
+    adv_e = _make_advert(sc_e, fresh, -60.0, 106.0**0.5)
+    device.adverts = {
+        ("dev-phase2-z", sc_a.address): adv_a,
+        ("dev-phase2-z", sc_b.address): adv_b,
+        ("dev-phase2-z", sc_c.address): adv_c,
+        ("dev-phase2-z", sc_d.address): adv_d,
+        ("dev-phase2-z", sc_e.address): adv_e,
+    }
+
+    coordinator._refresh_trilateration_for_device(device)
+
+    assert device.trilat_status == "ok"
+    assert device.trilat_floor_id == "f1"
+    assert device.trilat_anchor_count == 5
+    assert device.trilat_z_m is not None
+    assert abs(device.trilat_z_m - 1.0) < 0.75
 
 
 def test_phase2_clears_anchor_ewma_when_floor_role_changes():

@@ -2673,9 +2673,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             )
 
         anchors: list[AnchorMeasurement] = []
+        same_floor_anchors: list[AnchorMeasurement] = []
         confidence_anchor_sigmas_m: list[float] = []
         same_floor_known_anchor_z: list[float] = []
         current_anchor_floor_roles: dict[str, str] = {}
+        included_other_floor_anchor_count = 0
         for advert in latest.values():
             if advert.stamp < nowstamp - DISTANCE_TIMEOUT:
                 continue
@@ -2713,16 +2715,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 confidence_anchor_sigmas_m.append(effective_sigma_m)
                 if anchor_z_m is not None:
                     same_floor_known_anchor_z.append(float(anchor_z_m))
-            anchors.append(
-                AnchorMeasurement(
-                    scanner_address=scanner.address,
-                    x_m=float(anchor_x),
-                    y_m=float(anchor_y),
-                    range_m=float(advert.trilat_range_ewma_m),
-                    z_m=anchor_z_m,
-                    sigma_m=effective_sigma_m,
-                )
+            anchor_measurement = AnchorMeasurement(
+                scanner_address=scanner.address,
+                x_m=float(anchor_x),
+                y_m=float(anchor_y),
+                range_m=float(advert.trilat_range_ewma_m),
+                z_m=anchor_z_m,
+                sigma_m=effective_sigma_m,
             )
+            anchors.append(anchor_measurement)
+            if other_floor:
+                included_other_floor_anchor_count += 1
+            else:
+                same_floor_anchors.append(anchor_measurement)
 
         anchor_count = len(anchors)
         state.last_anchor_floor_roles = current_anchor_floor_roles
@@ -2802,9 +2807,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             if common_anchor_deltas
             else None
         )
+        solve_cross_floor_xy_only = included_other_floor_anchor_count > 0
         can_solve_3d = (
-            anchor_count >= self._TRILAT_MIN_ANCHORS_3D
+            not solve_cross_floor_xy_only
+            and anchor_count >= self._TRILAT_MIN_ANCHORS_3D
             and all(anchor.z_m is not None for anchor in anchors)
+        )
+        same_floor_can_solve_3d = (
+            len(same_floor_anchors) >= self._TRILAT_MIN_ANCHORS_3D
+            and all(anchor.z_m is not None for anchor in same_floor_anchors)
         )
         solver_dimension = "3d" if can_solve_3d else "2d"
 
@@ -2825,7 +2836,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             device.set_trilat_solution(
                 x_m=state.last_solution_xy[0],
                 y_m=state.last_solution_xy[1],
-                z_m=state.last_solution_z if state.last_solver_dimension == "3d" else None,
+                z_m=state.last_solution_z,
                 floor_id=selected_floor_id,
                 floor_name=selected_floor_name,
                 anchor_count=anchor_count,
@@ -2875,6 +2886,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             return
 
+        resolved_measurement_z: float | None = None
         if solver_dimension == "3d":
             centroid_3d = anchor_centroid_3d(anchors)
             initial_guess_3d = centroid_3d
@@ -2906,6 +2918,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 initial_guess_3d = (solve_prior.x_m, solve_prior.y_m, solve_prior.z_m)
             used_prior = solve_prior is not None
             solve_result = solve_3d_soft_l1(anchors, initial_guess=initial_guess_3d, prior=solve_prior)
+            resolved_measurement_z = solve_result.z_m
         else:
             centroid = anchor_centroid(anchors)
             initial_guess_2d = centroid
@@ -2928,6 +2941,64 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 initial_guess_2d = (solve_prior.x_m, solve_prior.y_m)
             used_prior = solve_prior is not None
             solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess_2d, prior=solve_prior)
+            if solve_cross_floor_xy_only:
+                if same_floor_can_solve_3d:
+                    same_floor_centroid_3d = anchor_centroid_3d(same_floor_anchors)
+                    initial_guess_same_floor_3d = (
+                        solve_result.x_m,
+                        solve_result.y_m,
+                        state.last_solution_z if state.last_solution_z is not None else ((anchor_z_bounds[0] + anchor_z_bounds[1]) / 2.0),
+                    )
+                    same_floor_prior = self._build_trilat_solve_prior(
+                        state,
+                        nowstamp=nowstamp,
+                        mobility_type=device.get_mobility_type(),
+                        solver_dimension="3d",
+                        selected_floor_id=selected_floor_id,
+                        mean_sigma_m=mean_sigma_m,
+                        mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                    )
+                    if (
+                        state.last_solution_xy is not None
+                        and state.last_solution_z is not None
+                        and selected_floor_id == state.floor_id
+                    ):
+                        if math.sqrt(
+                            ((state.last_solution_xy[0] - same_floor_centroid_3d[0]) ** 2)
+                            + ((state.last_solution_xy[1] - same_floor_centroid_3d[1]) ** 2)
+                            + ((state.last_solution_z - same_floor_centroid_3d[2]) ** 2)
+                        ) <= self._TRILAT_MAX_RESIDUAL_M:
+                            initial_guess_same_floor_3d = (
+                                state.last_solution_xy[0],
+                                state.last_solution_xy[1],
+                                state.last_solution_z,
+                            )
+                    if same_floor_prior is not None and (
+                        mean_anchor_range_delta_m is None or mean_anchor_range_delta_m <= self._TRILAT_MAX_RESIDUAL_M
+                    ):
+                        initial_guess_same_floor_3d = (
+                            solve_result.x_m,
+                            solve_result.y_m,
+                            same_floor_prior.z_m,
+                        )
+                    same_floor_z_result = solve_3d_soft_l1(
+                        same_floor_anchors,
+                        initial_guess=initial_guess_same_floor_3d,
+                        prior=same_floor_prior,
+                    )
+                    if (
+                        same_floor_z_result.ok
+                        and same_floor_z_result.z_m is not None
+                        and (
+                            same_floor_z_result.residual_rms_m is None
+                            or same_floor_z_result.residual_rms_m <= self._TRILAT_MAX_RESIDUAL_M
+                        )
+                    ):
+                        resolved_measurement_z = same_floor_z_result.z_m
+                if resolved_measurement_z is None:
+                    resolved_measurement_z = state.last_solution_z
+                    if resolved_measurement_z is None and anchor_z_bounds is not None:
+                        resolved_measurement_z = (anchor_z_bounds[0] + anchor_z_bounds[1]) / 2.0
 
         quality_metrics = self._compute_trilat_quality_metrics(
             anchors,
@@ -2977,7 +3048,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 nowstamp=nowstamp,
                 mobility_type=device.get_mobility_type(),
                 measurement_xy=fallback_xy,
-                measurement_z=fallback_z if solver_dimension == "3d" else None,
+                measurement_z=(
+                    fallback_z
+                    if solver_dimension == "3d"
+                    else (resolved_measurement_z if solve_cross_floor_xy_only else None)
+                ),
                 anchor_z_bounds=anchor_z_bounds,
                 residual_m=fallback_residual,
                 mean_sigma_m=mean_sigma_m,
@@ -3047,7 +3122,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             nowstamp=nowstamp,
             mobility_type=device.get_mobility_type(),
             measurement_xy=(solve_result.x_m, solve_result.y_m),
-            measurement_z=solve_result.z_m if solver_dimension == "3d" else None,
+            measurement_z=(
+                solve_result.z_m
+                if solver_dimension == "3d"
+                else (resolved_measurement_z if solve_cross_floor_xy_only else None)
+            ),
             anchor_z_bounds=anchor_z_bounds,
             residual_m=solve_result.residual_rms_m,
             mean_sigma_m=mean_sigma_m,
