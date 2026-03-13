@@ -3603,10 +3603,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         return response
 
     async def service_record_transition_sample(self, call: ServiceCall) -> ServiceResponse:
-        """Store one Bermuda-native transition sample."""
+        """Start a timed Bermuda-native transition sample capture."""
         x_m, y_m, z_m = self._parse_calibration_position(call.data)
         try:
-            response = await self.calibration.async_record_transition_sample(
+            response = await self.calibration.async_start_transition_session(
                 device_id=call.data["device_id"],
                 room_area_id=call.data["room_area_id"],
                 transition_name=call.data["transition_name"],

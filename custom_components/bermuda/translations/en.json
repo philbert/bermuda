@@ -215,7 +215,7 @@
     },
     "record_transition_sample": {
       "name": "Record Transition Sample",
-      "description": "Store one Bermuda-native floor-transition point for one tracked device. Each capture is saved as a separate sample.",
+      "description": "Start a timed capture for one Bermuda-native floor-transition sample tied to a tracked device.",
       "fields": {
         "device_id": {
           "name": "Device",
@@ -255,7 +255,7 @@
         },
         "capture_duration_s": {
           "name": "Capture Duration",
-          "description": "Capture metadata in seconds. This does not change the transition identity."
+          "description": "Capture duration in seconds. Bermuda records live anchor observations during this window before storing the transition sample."
         }
       }
     }

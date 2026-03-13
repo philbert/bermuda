@@ -221,10 +221,11 @@ Semantics:
 
 - the transition point belongs to `room_area_id`,
 - `transition_name` is user-facing text,
-- each persisted transition sample stores the current `anchor_layout_hash` alongside `x/y/z`,
-- Bermuda derives an internal stable key from `(room_area_id, transition_name, anchor_layout_hash)` and does not expose that key,
-- multiple captures for the same key should merge by position centroid, union of `transition_floor_ids`, and the larger `sample_radius_m`,
-- `capture_duration_s` is capture metadata only and is not part of the persisted transition-point identity,
+- each capture is a timed observation window, not an immediate static insert,
+- each persisted transition sample stores the current `anchor_layout_hash` alongside declared `x/y/z`,
+- each capture remains a separate persisted sample even if `room_area_id` and `transition_name` are reused,
+- `capture_duration_s` is a real capture window used to record live anchor observations and quality metrics,
+- persisted transition samples should carry the same kind of anchor buckets and quality fields as room calibration samples,
 - transition samples are stored separately from room samples and must not feed ordinary room kernels or fingerprints.
 
 Do not confuse this with the existing intra-floor room transition model in `room_classifier.py`.
@@ -521,10 +522,10 @@ Add a separate transition-sample path:
 - new Bermuda-native service such as `bermuda.record_transition_sample`,
 - separate persistence from normal room calibration samples,
 - automatic storage of the current `anchor_layout_hash`,
-- internal transition-point key derived from `(room_area_id, transition_name, anchor_layout_hash)`,
+- timed transition capture sessions with start/finish notifications,
 - support multiple transition points inside the same HA area,
-- merge repeated captures of the same key by centroid, floor-id union, and max radius,
-- use `capture_duration_s` as capture metadata only, not persisted house topology,
+- keep repeated captures as separate persisted samples so distinct `x/y/z` points are preserved,
+- persist live anchor observations and quality metrics from the capture window,
 - runtime proximity/support checks that can be surfaced in diagnostics before they influence assignment logic.
 
 Longer-term additions:
@@ -595,7 +596,9 @@ Expected payoff:
 - add `bermuda.record_transition_sample`,
 - store transition samples separately from room samples,
 - automatically persist the current `anchor_layout_hash` with each transition sample,
-- derive an internal transition-point key from `(room_area_id, transition_name, anchor_layout_hash)`,
+- run transition sampling as a timed capture session with start/finish notifications,
+- persist anchor observations and quality metrics for each transition capture,
+- keep each transition capture as a separate persisted sample rather than merging by name,
 - compute transition proximity/support diagnostics in parallel with the existing pipeline,
 - do not let transition samples affect assignment yet.
 
@@ -658,6 +661,8 @@ Expected payoff:
 - `challenger_fingerprint_hold_since` is cleared when the challenger identity changes,
 - transition samples are stored separately from room samples and do not affect room kernels directly,
 - transition samples persist `anchor_layout_hash`,
+- transition samples are captured through timed sessions and persist live anchor observations plus quality,
+- transition samples do not merge away distinct `x/y/z` points inside the same room,
 - a challenger floor with nearby matching transition support gets reduced switch penalty / dwell,
 - a challenger floor without nearby matching transition support does not get forced through,
 - hybrid floor arbitration can hold ambiguity instead of forcing a wrong room,

@@ -287,6 +287,21 @@ async def test_record_transition_sample_service_keeps_repeated_captures_separate
     target.name = "Phil Phone"
     coordinator.devices[target.address] = target
 
+    for idx in range(3):
+        scanner = BermudaDevice(f"aa:bb:cc:dd:21:0{idx}", coordinator)
+        scanner.name = f"Scanner {idx}"
+        scanner.anchor_enabled = True
+        scanner.anchor_x_m = float(idx)
+        scanner.anchor_y_m = float(idx + 1)
+        scanner.anchor_z_m = 2.0
+        coordinator.devices[scanner.address] = scanner
+        coordinator._scanner_list.add(scanner.address)
+        target.adverts[(target.address, scanner.address)] = SimpleNamespace(
+            scanner_address=scanner.address,
+            stamp=monotonic_time_coarse(),
+            rssi=-65.0 - idx,
+        )
+
     response = await hass.services.async_call(
         DOMAIN,
         "record_transition_sample",
@@ -303,10 +318,18 @@ async def test_record_transition_sample_service_keeps_repeated_captures_separate
         return_response=True,
     )
 
-    assert response["merged"] is False
+    assert response["session_id"].startswith("transition_")
+    assert isinstance(response["expected_complete_at"], str)
     assert response["transition_name"] == "stairwell"
     assert response["transition_floor_ids"] == [basement.floor_id]
-    assert response["id"].startswith("transition_sample_")
+    first_session_id = response["session_id"]
+
+    coordinator.calibration.capture_update()
+    await coordinator.calibration._async_finalize_session(first_session_id)
+    task = coordinator.calibration._session_tasks.pop(first_session_id)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
     response = await hass.services.async_call(
         DOMAIN,
@@ -326,14 +349,20 @@ async def test_record_transition_sample_service_keeps_repeated_captures_separate
         return_response=True,
     )
 
-    assert response["merged"] is False
-    assert response["id"].startswith("transition_sample_")
-    assert response["id"] != ""
+    assert response["session_id"].startswith("transition_")
     assert response["x_m"] == 3.0
     assert response["y_m"] == 4.0
     assert response["z_m"] == 5.0
     assert response["sample_radius_m"] == 1.5
     assert response["transition_floor_ids"] == sorted([basement.floor_id, top_floor.floor_id])
+    second_session_id = response["session_id"]
+
+    coordinator.calibration.capture_update()
+    await coordinator.calibration._async_finalize_session(second_session_id)
+    task = coordinator.calibration._session_tasks.pop(second_session_id)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
     transition_samples = coordinator.calibration.transition_samples()
     assert len(transition_samples) == 2
@@ -345,10 +374,10 @@ async def test_record_transition_sample_service_keeps_repeated_captures_separate
         assert stored["room_floor_id"] == ground_floor.floor_id
         assert stored["transition_name"] == "stairwell"
         assert stored["anchor_layout_hash"] == coordinator.calibration.current_anchor_layout_hash
+        assert stored["capture_duration_s"] in {45, 60}
+        assert stored["quality"]["status"] == "accepted"
+        assert len(stored["anchors"]) == 3
         assert "transition_key" not in stored
-        assert "capture_count" not in stored
-        assert "last_capture_duration_s" not in stored
-        assert "total_capture_duration_s" not in stored
 
 
 async def test_record_transition_sample_service_updates_persistent_notification(
@@ -373,6 +402,21 @@ async def test_record_transition_sample_service_updates_persistent_notification(
     target.name = "Phil Phone"
     coordinator.devices[target.address] = target
 
+    for idx in range(3):
+        scanner = BermudaDevice(f"aa:bb:cc:dd:23:0{idx}", coordinator)
+        scanner.name = f"Scanner {idx}"
+        scanner.anchor_enabled = True
+        scanner.anchor_x_m = float(idx)
+        scanner.anchor_y_m = float(idx + 1)
+        scanner.anchor_z_m = 2.0
+        coordinator.devices[scanner.address] = scanner
+        coordinator._scanner_list.add(scanner.address)
+        target.adverts[(target.address, scanner.address)] = SimpleNamespace(
+            scanner_address=scanner.address,
+            stamp=monotonic_time_coarse(),
+            rssi=-65.0 - idx,
+        )
+
     with patch("custom_components.bermuda.calibration.persistent_notification.async_create") as notify_mock:
         response = await hass.services.async_call(
             DOMAIN,
@@ -390,22 +434,31 @@ async def test_record_transition_sample_service_updates_persistent_notification(
             return_response=True,
         )
 
-        assert response["merged"] is False
-        assert notify_mock.call_count == 2
+        session_id = response["session_id"]
+        assert notify_mock.call_count == 1
 
         start_call = notify_mock.call_args_list[0]
-        finish_call = notify_mock.call_args_list[1]
-        notification_id = start_call.kwargs["notification_id"]
-        assert notification_id.startswith("bermuda_transition_")
-        assert finish_call.kwargs["notification_id"] == notification_id
-
         assert start_call.kwargs["title"] == "Bermuda transition sample"
+        assert start_call.kwargs["notification_id"] == f"bermuda_transition_{session_id}"
         start_message = start_call.args[1]
         assert "Room: Entrance" in start_message
         assert "Room floor: Ground floor" in start_message
         assert "Transition: stairwell" in start_message
         assert "Transition floors: Basement" in start_message
         assert "Status: started" in start_message
+        assert "Expected complete at:" in start_message
+
+        coordinator.calibration.capture_update()
+        await coordinator.calibration._async_finalize_session(session_id)
+        task = coordinator.calibration._session_tasks.pop(session_id)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await hass.async_block_till_done()
+
+        assert notify_mock.call_count == 2
+        finish_call = notify_mock.call_args_list[1]
+        assert finish_call.kwargs["notification_id"] == f"bermuda_transition_{session_id}"
 
         assert finish_call.kwargs["title"] == "Bermuda transition sample"
         finish_message = finish_call.args[1]
@@ -413,8 +466,10 @@ async def test_record_transition_sample_service_updates_persistent_notification(
         assert "Radius: 1.000 m" in finish_message
         assert "Capture duration: 60 s" in finish_message
         assert "Transition floors: Basement" in finish_message
-        assert "Status: stored" in finish_message
-        assert "Capture count:" not in finish_message
+        assert "Status: accepted" in finish_message
+        assert "Sample ID:" in finish_message
+        assert "Quality: " in finish_message
+        assert "Quality details: anchors=3" in finish_message
 
 
 async def test_transition_sample_diagnostics_are_exposed_without_affecting_assignment(
@@ -447,7 +502,21 @@ async def test_transition_sample_diagnostics_are_exposed_without_affecting_assig
     target.trilat_floor_diagnostics = {"selected_floor_id": ground_floor.floor_id}
     coordinator.devices[target.address] = target
 
-    await hass.services.async_call(
+    scanner = BermudaDevice("aa:bb:cc:dd:22:01", coordinator)
+    scanner.name = "Scanner"
+    scanner.anchor_enabled = True
+    scanner.anchor_x_m = 1.0
+    scanner.anchor_y_m = 2.0
+    scanner.anchor_z_m = 3.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+    target.adverts[(target.address, scanner.address)] = SimpleNamespace(
+        scanner_address=scanner.address,
+        stamp=monotonic_time_coarse(),
+        rssi=-65.0,
+    )
+
+    response = await hass.services.async_call(
         DOMAIN,
         "record_transition_sample",
         {
@@ -462,6 +531,13 @@ async def test_transition_sample_diagnostics_are_exposed_without_affecting_assig
         blocking=True,
         return_response=True,
     )
+    session_id = response["session_id"]
+    coordinator.calibration.capture_update()
+    await coordinator.calibration._async_finalize_session(session_id)
+    task = coordinator.calibration._session_tasks.pop(session_id)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
     state = coordinator._get_trilat_decision_state(target)
     state.floor_challenger_id = street_level.floor_id
