@@ -415,7 +415,8 @@ This is deferred until the binary traversal gate is validated on replay traces.
 
 - Replace single `last_zone_proximity_at` / `last_zone_id` with a per-zone traversal history:
   `zone_traversal_history: dict[zone_id, (entry_at, exit_at)]`, keyed by zone ID.
-- Each update cycle, track zone entry (position inside union envelope) and exit (position outside)
+- Each update cycle, evaluate `zone_score(position)` for each zone using the max-of-kernels
+  model. Track zone entry (score rises above threshold) and exit (score falls below threshold)
   per zone. Record a completed traversal when exit follows entry.
 - In the reachability gate, check for a recent completed traversal of a compatible zone.
   If found, remove the hard block; do not shift the distance anchor or grant plausibility.

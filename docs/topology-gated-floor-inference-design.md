@@ -190,27 +190,39 @@ For example, in a four-floor house (basement, street level, ground floor, top fl
 
 ## Minimal Geometry Model
 
-The geometry does not need to be sophisticated.
+The geometry does not need to be sophisticated, but it must use the same soft-kernel model
+already used throughout Bermuda for calibration samples. Hard disc boundaries should not be
+introduced.
 
-For the first usable design, a transition zone's geometry is the **union of its recorded captures**:
+Each transition zone capture is a Gaussian kernel:
 
-- each capture has a position `x/y/z` and a support radius,
-- the zone's effective envelope is the union of all per-capture discs,
-- capture positions are **not averaged or centroided**.
+```
+score(p, capture) = exp(-0.5 * d(p, capture)² / sigma²)
+```
 
-Naive centroiding must be avoided. Stairs and landings occupy a specific geometric path.
-Averaging captures at the top and bottom of a staircase produces a centroid in the middle of
-the floor slab — exactly where no transition is possible. The union model preserves the actual
-geometry.
+where `d` is the 3D distance from position `p` to the capture centroid and `sigma` is the
+capture's `sample_radius_m` (the same field used for room calibration samples, with the same
+interpretation as a soft kernel width, not a hard boundary).
 
-For the reachability check, the distance from the challenger reference position to the zone is
-the minimum distance to any individual capture disc. A position is within the zone if it falls
-within the support radius of at least one capture.
+The zone's **proximity score** at any position is the maximum kernel score across all captures:
+
+```
+zone_score(p) = max over captures of score(p, capture)
+```
+
+Taking the maximum preserves the actual geometry of all recorded captures.
+Capture positions are **not averaged or centroided** — averaging captures at the top and bottom
+of a staircase produces a centroid in the floor slab where no transition is possible.
+
+For the reachability check and the traversal tracker, a configurable score threshold replaces
+any notion of a hard boundary radius. A position is "near" a zone when `zone_score` exceeds
+the threshold; it has "exited" the zone when it falls back below it. This is consistent with
+how room kernels and fingerprint scores already work in the classifier.
 
 That is enough for:
 
-- simple distance-to-zone checks,
-- uncertainty-expanded proximity checks,
+- soft distance-to-zone checks with uncertainty-appropriate falloff,
+- traversal detection (entry and exit defined by threshold crossing),
 - conservative lower-bound reachability tests.
 
 There is no need to introduce path planning or a full room graph in the first version.
@@ -277,12 +289,12 @@ reference position will be far from the zone and the gate will incorrectly block
 To handle this, a lightweight background tracker should continuously record transition-zone
 proximity using only high-quality live solves, independent of any active challenger:
 
-- each update cycle, if solve quality is above a threshold, record whether the current position
-  is inside or outside each zone's union envelope,
-- track zone entry and zone exit per zone ID: a **traversal** is recorded when the device enters
-  a zone's envelope and subsequently exits it,
-- proximity alone (entering but not yet exiting) is not sufficient — a device can be near a
-  staircase or doorway while remaining on the same floor.
+- each update cycle, if solve quality is above a threshold, evaluate `zone_score(position)` for
+  each zone using the max-of-Gaussian-kernels model,
+- track zone entry (score rises above a configurable threshold) and zone exit (score falls below
+  it) per zone ID: a **traversal** is recorded when exit follows entry,
+- entry alone (score above threshold but not yet fallen back) is not sufficient — a device can
+  score near a staircase while remaining on the same floor.
 
 When a challenger forms, the reachability gate uses the background traversal history as follows:
 
