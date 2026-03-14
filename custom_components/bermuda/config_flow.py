@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -164,6 +165,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             menu_options={
                 "selectdevices": "Select Devices",
                 "experimental": "Experimental",
+                "floor_heights": "Floor Heights",
                 "calibration_samples": "Calibration Samples",
                 "transition_samples": "Transition Samples",
             },
@@ -330,6 +332,56 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     "  This does not change floor evidence scoring."
                 )
             },
+        )
+
+    async def async_step_floor_heights(self, user_input=None):
+        """Configure per-floor surface Z heights for the phone-height band prior."""
+        coordinator = self.coordinator
+        floors = {
+            floor.floor_id: floor.name
+            for floor in coordinator.fr.floors.values()
+        }
+
+        def _form_key(floor_id: str) -> str:
+            return "z_" + re.sub(r"[^a-z0-9_]", "_", floor_id.lower())
+
+        floor_id_by_key = {_form_key(fid): fid for fid in floors}
+
+        if user_input is not None:
+            for key, value in user_input.items():
+                floor_id = floor_id_by_key.get(key)
+                if floor_id is None:
+                    continue
+                z_val: float | None = None
+                if value is not None and str(value).strip() != "":
+                    try:
+                        z_val = float(value)
+                    except (ValueError, TypeError):
+                        z_val = None
+                await coordinator._floor_config_store.async_set(floor_id, z_val)
+            return await self._update_options()
+
+        schema_fields: dict = {}
+        description_lines = [
+            "Set the floor surface height (Z) in metres for each floor.\n",
+            "This enables the phone-height prior (Z ≈ floor + 0.6 m) and",
+            "per-floor XY envelope constraints.\n",
+            "Leave blank if unknown.\n",
+        ]
+        for floor_id, floor_name in sorted(floors.items(), key=lambda x: x[1]):
+            key = _form_key(floor_id)
+            current_z = coordinator.get_floor_z_m(floor_id)
+            default_str = "" if current_z is None else str(current_z)
+            schema_fields[vol.Optional(key, default=default_str)] = str
+            description_lines.append(f"- **{floor_name}** → field `{key}` (metres)")
+
+        if not floors:
+            description_lines.append("\n_No floors configured in Home Assistant._")
+
+        return self.async_show_form(
+            step_id="floor_heights",
+            data_schema=vol.Schema(schema_fields),
+            description_placeholders={"summary": "\n".join(description_lines)},
         )
 
     async def async_step_calibration_samples_summary(self, user_input=None):

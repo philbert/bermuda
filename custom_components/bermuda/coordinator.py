@@ -58,6 +58,7 @@ from homeassistant.util.dt import get_age, now
 from .bermuda_device import BermudaDevice
 from .calibration import BermudaCalibrationManager
 from .calibration_store import BermudaCalibrationStore
+from .floor_config_store import FloorConfigStore
 from .transition_zone_store import BermudaTransitionZoneStore, TransitionZone
 from .reachability_gate import ReachabilityGate, ReachabilityDecision
 from .bermuda_irk import BermudaIrkManager
@@ -252,6 +253,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self.calibration_store = BermudaCalibrationStore(hass, entry.entry_id)
         self.scanner_anchor_store = BermudaScannerAnchorStore(hass)
         self._transition_zone_store = BermudaTransitionZoneStore(hass)
+        self._floor_config_store = FloorConfigStore(hass)
         self._reachability_gate = ReachabilityGate()
         self.calibration = BermudaCalibrationManager(hass, self, self.calibration_store)
         self.ranging_model = BermudaRangingModel(self.calibration)
@@ -403,6 +405,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         """Initialize coordinator-owned subsystems after setup."""
         await self.scanner_anchor_store.async_ensure_loaded()
         await self._transition_zone_store.async_load()
+        await self._floor_config_store.async_load()
         await self.calibration.async_initialize()
         migrated = await self.calibration.async_migrate_transition_samples_to_zones(
             self._transition_zone_store
@@ -567,6 +570,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def trilat_reachability_gate_enabled(self) -> bool:
         return bool(self.options.get(CONF_TRILAT_REACHABILITY_GATE, DEFAULT_TRILAT_REACHABILITY_GATE))
+
+    def get_floor_z_m(self, floor_id: str | None) -> float | None:
+        """Return the configured floor surface Z height in metres, or None if unconfigured."""
+        cfg = self._floor_config_store.get(floor_id)
+        return cfg.floor_z_m if cfg is not None else None
 
     def get_manufacturer_from_id(self, uuid: int | str) -> tuple[str, bool] | tuple[None, None]:
         """
@@ -2084,6 +2092,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         state.last_filter_stamp = nowstamp
         return (filtered_x, filtered_y), filtered_z
 
+    # Phone-height band: a phone is almost always held between floor level and 1.2 m above it.
+    # The prior centre is mid-band (floor_z + 0.6 m); sigma is tight (0.4 m) so it meaningfully
+    # constrains Z without preventing the solve from going outside the band under strong evidence.
+    _PHONE_HEIGHT_Z_CENTER_M: float = 0.6
+    _PHONE_HEIGHT_Z_SIGMA_M: float = 0.4
+
     def _build_trilat_solve_prior(
         self,
         state: TrilatDecisionState,
@@ -2094,11 +2108,41 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         selected_floor_id: str | None,
         mean_sigma_m: float | None,
         mean_anchor_range_delta_m: float | None,
+        floor_z_m: float | None = None,
+        layout_hash: str = "",
     ) -> SolvePrior2D | SolvePrior3D | None:
-        """Build a soft predicted-position prior for the next trilat solve."""
-        if state.last_solution_xy is None or state.last_filter_stamp <= 0.0:
-            return None
-        if selected_floor_id is None or state.floor_id is None or selected_floor_id != state.floor_id:
+        """Build a soft predicted-position prior for the next trilat solve.
+
+        When *floor_z_m* is provided (Step 10) the phone-height band prior
+        [floor_z_m, floor_z_m + 1.2 m] is combined with the motion-based Z
+        estimate via a Gaussian product.  When there is no prior Z history but
+        floor_z_m is known, the phone-height prior seeds the initial estimate.
+
+        When *layout_hash* is provided (Step 12) the predicted XY is soft-
+        clamped to the per-floor calibration envelope so the solver is always
+        anchored within the known calibrated space.
+        """
+        # --- XY motion prior ------------------------------------------------
+        # Require a previous solution and recent stamp to build an XY prior.
+        has_xy_prior = (
+            state.last_solution_xy is not None
+            and state.last_filter_stamp > 0.0
+            and (selected_floor_id is not None)
+            and (state.floor_id is not None)
+            and (selected_floor_id == state.floor_id)
+        )
+        if not has_xy_prior:
+            # No XY prior, but we may still inject a Z-only phone-height prior
+            # for 3D solves when floor_z_m is known.
+            if solver_dimension == "3d" and floor_z_m is not None:
+                return SolvePrior3D(
+                    x_m=0.0,
+                    y_m=0.0,
+                    z_m=floor_z_m + self._PHONE_HEIGHT_Z_CENTER_M,
+                    sigma_x_m=1e6,  # effectively unconstrained XY
+                    sigma_y_m=1e6,
+                    sigma_z_m=self._PHONE_HEIGHT_Z_SIGMA_M,
+                )
             return None
 
         raw_dt = nowstamp - state.last_filter_stamp
@@ -2107,13 +2151,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         if mean_anchor_range_delta_m is not None and mean_anchor_range_delta_m > (self._TRILAT_MAX_RESIDUAL_M * 2.0):
             return None
 
-        dt = raw_dt
-        if dt <= 0.0:
-            dt = 0.0
-        dt = min(dt, self._TRILAT_MAX_FILTER_DT_S)
+        dt = max(0.0, min(raw_dt, self._TRILAT_MAX_FILTER_DT_S))
 
         predicted_x = state.last_solution_xy[0] + (state.velocity_x_mps * dt)
         predicted_y = state.last_solution_xy[1] + (state.velocity_y_mps * dt)
+
+        # Step 12: soft-clamp predicted XY to the per-floor calibration envelope.
+        if layout_hash and selected_floor_id:
+            room_classifier = getattr(self, "room_classifier", None)
+            if room_classifier is not None:
+                envelope = room_classifier.floor_xy_envelope(layout_hash, selected_floor_id)
+                if envelope is not None:
+                    x_min, x_max, y_min, y_max = envelope
+                    predicted_x = max(x_min, min(x_max, predicted_x))
+                    predicted_y = max(y_min, min(y_max, predicted_y))
 
         residual_term = min(self._TRILAT_MAX_RESIDUAL_M, max(0.0, state.last_residual_m or 0.0))
         sigma_term = min(self._TRILAT_DEFAULT_ANCHOR_SIGMA_M, max(0.0, mean_sigma_m or state.last_mean_sigma_m or 0.0))
@@ -2149,6 +2200,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
         if solver_dimension == "3d":
             if state.last_solution_z is None:
+                if floor_z_m is not None:
+                    # Bootstrap: no motion Z, but floor height is known — seed with phone-height.
+                    return SolvePrior3D(
+                        x_m=predicted_x,
+                        y_m=predicted_y,
+                        z_m=floor_z_m + self._PHONE_HEIGHT_Z_CENTER_M,
+                        sigma_x_m=sigma_xy,
+                        sigma_y_m=sigma_xy,
+                        sigma_z_m=self._PHONE_HEIGHT_Z_SIGMA_M,
+                    )
                 return None
             predicted_z = state.last_solution_z + (state.velocity_z_mps * dt)
             sigma_z = (
@@ -2165,6 +2226,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 mobility_type=mobility_type,
             )
             sigma_z = max(0.35, sigma_z)
+
+            # Step 10: combine motion Z prior with phone-height band prior (Gaussian product).
+            if floor_z_m is not None:
+                phone_z = floor_z_m + self._PHONE_HEIGHT_Z_CENTER_M
+                sigma_phone = self._PHONE_HEIGHT_Z_SIGMA_M
+                inv_var_motion = 1.0 / (sigma_z * sigma_z)
+                inv_var_phone = 1.0 / (sigma_phone * sigma_phone)
+                total_inv_var = inv_var_motion + inv_var_phone
+                predicted_z = (predicted_z * inv_var_motion + phone_z * inv_var_phone) / total_inv_var
+                sigma_z = math.sqrt(1.0 / total_inv_var)
+
             return SolvePrior3D(
                 x_m=predicted_x,
                 y_m=predicted_y,
@@ -3213,7 +3285,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             )
 
         anchors: list[AnchorMeasurement] = []
-        same_floor_anchors: list[AnchorMeasurement] = []
         confidence_anchor_sigmas_m: list[float] = []
         same_floor_known_anchor_z: list[float] = []
         current_anchor_floor_roles: dict[str, str] = {}
@@ -3266,8 +3337,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             anchors.append(anchor_measurement)
             if other_floor:
                 included_other_floor_anchor_count += 1
-            else:
-                same_floor_anchors.append(anchor_measurement)
 
         anchor_count = len(anchors)
         state.last_anchor_floor_roles = current_anchor_floor_roles
@@ -3348,15 +3417,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             if common_anchor_deltas
             else None
         )
-        solve_cross_floor_xy_only = included_other_floor_anchor_count > 0
+        # Step 11: Always run 3D when all anchors carry Z coordinates, regardless of
+        # whether cross-floor anchors are included.  Cross-floor anchors already have
+        # inflated sigma so the 3D solve naturally down-weights their Z contribution.
         can_solve_3d = (
-            not solve_cross_floor_xy_only
-            and anchor_count >= self._TRILAT_MIN_ANCHORS_3D
+            anchor_count >= self._TRILAT_MIN_ANCHORS_3D
             and all(anchor.z_m is not None for anchor in anchors)
-        )
-        same_floor_can_solve_3d = (
-            len(same_floor_anchors) >= self._TRILAT_MIN_ANCHORS_3D
-            and all(anchor.z_m is not None for anchor in same_floor_anchors)
         )
         solver_dimension = "3d" if can_solve_3d else "2d"
 
@@ -3427,7 +3493,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             return
 
-        resolved_measurement_z: float | None = None
+        # Step 10: look up the configured floor surface height for the phone-height Z prior.
+        floor_z_m = self.get_floor_z_m(selected_floor_id)
+
         if solver_dimension == "3d":
             centroid_3d = anchor_centroid_3d(anchors)
             initial_guess_3d = centroid_3d
@@ -3439,6 +3507,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 selected_floor_id=selected_floor_id,
                 mean_sigma_m=mean_sigma_m,
                 mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                floor_z_m=floor_z_m,
+                layout_hash=layout_hash,
             )
             if (
                 state.last_solution_xy is not None
@@ -3459,7 +3529,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 initial_guess_3d = (solve_prior.x_m, solve_prior.y_m, solve_prior.z_m)
             used_prior = solve_prior is not None
             solve_result = solve_3d_soft_l1(anchors, initial_guess=initial_guess_3d, prior=solve_prior)
-            resolved_measurement_z = solve_result.z_m
         else:
             centroid = anchor_centroid(anchors)
             initial_guess_2d = centroid
@@ -3471,6 +3540,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 selected_floor_id=selected_floor_id,
                 mean_sigma_m=mean_sigma_m,
                 mean_anchor_range_delta_m=mean_anchor_range_delta_m,
+                floor_z_m=floor_z_m,
+                layout_hash=layout_hash,
             )
             if state.last_solution_xy is not None and selected_floor_id == state.floor_id:
                 if math.hypot(
@@ -3482,64 +3553,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 initial_guess_2d = (solve_prior.x_m, solve_prior.y_m)
             used_prior = solve_prior is not None
             solve_result = solve_2d_soft_l1(anchors, initial_guess=initial_guess_2d, prior=solve_prior)
-            if solve_cross_floor_xy_only:
-                if same_floor_can_solve_3d:
-                    same_floor_centroid_3d = anchor_centroid_3d(same_floor_anchors)
-                    initial_guess_same_floor_3d = (
-                        solve_result.x_m,
-                        solve_result.y_m,
-                        state.last_solution_z if state.last_solution_z is not None else ((anchor_z_bounds[0] + anchor_z_bounds[1]) / 2.0),
-                    )
-                    same_floor_prior = self._build_trilat_solve_prior(
-                        state,
-                        nowstamp=nowstamp,
-                        mobility_type=device.get_mobility_type(),
-                        solver_dimension="3d",
-                        selected_floor_id=selected_floor_id,
-                        mean_sigma_m=mean_sigma_m,
-                        mean_anchor_range_delta_m=mean_anchor_range_delta_m,
-                    )
-                    if (
-                        state.last_solution_xy is not None
-                        and state.last_solution_z is not None
-                        and selected_floor_id == state.floor_id
-                    ):
-                        if math.sqrt(
-                            ((state.last_solution_xy[0] - same_floor_centroid_3d[0]) ** 2)
-                            + ((state.last_solution_xy[1] - same_floor_centroid_3d[1]) ** 2)
-                            + ((state.last_solution_z - same_floor_centroid_3d[2]) ** 2)
-                        ) <= self._TRILAT_MAX_RESIDUAL_M:
-                            initial_guess_same_floor_3d = (
-                                state.last_solution_xy[0],
-                                state.last_solution_xy[1],
-                                state.last_solution_z,
-                            )
-                    if same_floor_prior is not None and (
-                        mean_anchor_range_delta_m is None or mean_anchor_range_delta_m <= self._TRILAT_MAX_RESIDUAL_M
-                    ):
-                        initial_guess_same_floor_3d = (
-                            solve_result.x_m,
-                            solve_result.y_m,
-                            same_floor_prior.z_m,
-                        )
-                    same_floor_z_result = solve_3d_soft_l1(
-                        same_floor_anchors,
-                        initial_guess=initial_guess_same_floor_3d,
-                        prior=same_floor_prior,
-                    )
-                    if (
-                        same_floor_z_result.ok
-                        and same_floor_z_result.z_m is not None
-                        and (
-                            same_floor_z_result.residual_rms_m is None
-                            or same_floor_z_result.residual_rms_m <= self._TRILAT_MAX_RESIDUAL_M
-                        )
-                    ):
-                        resolved_measurement_z = same_floor_z_result.z_m
-                if resolved_measurement_z is None:
-                    resolved_measurement_z = state.last_solution_z
-                    if resolved_measurement_z is None and anchor_z_bounds is not None:
-                        resolved_measurement_z = (anchor_z_bounds[0] + anchor_z_bounds[1]) / 2.0
 
         quality_metrics = self._compute_trilat_quality_metrics(
             anchors,
@@ -3589,11 +3602,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 nowstamp=nowstamp,
                 mobility_type=device.get_mobility_type(),
                 measurement_xy=fallback_xy,
-                measurement_z=(
-                    fallback_z
-                    if solver_dimension == "3d"
-                    else (resolved_measurement_z if solve_cross_floor_xy_only else None)
-                ),
+                measurement_z=(fallback_z if solver_dimension == "3d" else None),
                 anchor_z_bounds=anchor_z_bounds,
                 residual_m=fallback_residual,
                 mean_sigma_m=mean_sigma_m,
@@ -3663,11 +3672,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             nowstamp=nowstamp,
             mobility_type=device.get_mobility_type(),
             measurement_xy=(solve_result.x_m, solve_result.y_m),
-            measurement_z=(
-                solve_result.z_m
-                if solver_dimension == "3d"
-                else (resolved_measurement_z if solve_cross_floor_xy_only else None)
-            ),
+            measurement_z=(solve_result.z_m if solver_dimension == "3d" else None),
             anchor_z_bounds=anchor_z_bounds,
             residual_m=solve_result.residual_rms_m,
             mean_sigma_m=mean_sigma_m,

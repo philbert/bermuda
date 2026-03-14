@@ -169,6 +169,27 @@ class BermudaRoomClassifier:
             sample.floor_id == floor_id for sample in self._fingerprints.get(layout_hash, [])
         )
 
+    def floor_xy_envelope(
+        self,
+        layout_hash: str,
+        floor_id: str | None,
+    ) -> tuple[float, float, float, float] | None:
+        """Return (x_min, x_max, y_min, y_max) bounding box for a floor's calibration samples.
+
+        Each sample is expanded by its sigma (capture radius). Returns None if no samples
+        are available for this floor and layout hash.
+        """
+        if floor_id is None:
+            return None
+        kernels = [k for k in self._layouts.get(layout_hash, []) if k.floor_id == floor_id]
+        if not kernels:
+            return None
+        x_min = min(k.x_m - k.sigma_m for k in kernels)
+        x_max = max(k.x_m + k.sigma_m for k in kernels)
+        y_min = min(k.y_m - k.sigma_m for k in kernels)
+        y_max = max(k.y_m + k.sigma_m for k in kernels)
+        return (x_min, x_max, y_min, y_max)
+
     def classify(
         self,
         *,
