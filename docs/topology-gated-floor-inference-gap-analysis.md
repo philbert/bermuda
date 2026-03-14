@@ -451,7 +451,11 @@ would make it impossible to know which one fixed or broke any given failure.
    competition still applies. Wire behind a feature flag. Partial coverage falls back per-pair.
    Unknown/low-confidence `from_floor` bypasses the gate.
 8. **Replay validation**: Test against known failure traces (`Guest Room → Garage front`,
-   `Ana's Office → Garage front`). Gate must block both before proceeding.
+   `Ana's Office → Garage front`). Traces must be replayed from a state where the source floor
+   is already established with sufficient confidence to activate the gate. Replaying from startup
+   state exercises the bootstrap bypass by design and is not a valid test of the gate. The test
+   condition is: source floor confirmed, no recent zone traversal, challenger appears — gate must
+   block.
 
 ### Phase 2 — Geometry improvements
 
