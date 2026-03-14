@@ -1746,6 +1746,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         # Per-zone traversal tracking: zone_id -> (entry_at, exit_at); exit_at=0.0 means in-zone
         zone_traversal_history: dict = field(default_factory=dict)
         zone_entry_scores: dict = field(default_factory=dict)
+        # Timestamp of the last cycle where fingerprint_switch_veto fired.  Used to
+        # persist the veto for a short hold window so that a single cycle of weak
+        # fp_conf cannot sneak a floor switch through.
+        last_fingerprint_veto_at: float = 0.0
 
     _TRILAT_MIN_ANCHORS: int = 3
     _TRILAT_MIN_ANCHORS_3D: int = 4
@@ -1757,6 +1761,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     _TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_HIGH: float = 0.70
     _TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_MODERATE: float = 0.55
     _TRILAT_FINGERPRINT_FLOOR_SCORE_RATIO_HOLD: float = 1.25
+    # After the fingerprint veto fires, hold the veto active for this many seconds
+    # even if fp_conf momentarily drops below the support threshold on a single cycle.
+    _FINGERPRINT_VETO_HOLD_S: float = 8.0
     _TRILAT_TRANSITION_SUPPORT_REQUIRED: float = 0.60
     _TRILAT_RECENT_TRANSITION_WINDOW_S: float = 20.0
     _TRILAT_FLOOR_SWITCH_PRIOR_WINDOW_S: float = 12.0
@@ -2994,6 +3001,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     state.challenger_fingerprint_hold_since = 0.0
                     state.challenger_fingerprint_hold_total_s = 0.0
                     state.challenger_fingerprint_hold_expired = False
+                    state.last_fingerprint_veto_at = 0.0
                     # Use last known good position as reference — more reliable than the
                     # current position at challenger onset, which may already be degraded.
                     # Only use it if it was recorded recently (within 2x the traversal window).
@@ -3122,8 +3130,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                             "reachability_gate_nearest_m": _gate_result.nearest_zone_distance_m,
                         })
 
+                veto_hold_active = (
+                    nowstamp - state.last_fingerprint_veto_at
+                ) < self._FINGERPRINT_VETO_HOLD_S
                 if not _gate_blocked and not fingerprint_hold_active and challenger_effective_dwell_s >= effective_required_dwell_s:
                     if fingerprint_supports_current_floor:
+                        fingerprint_switch_veto_active = True
+                        state.last_fingerprint_veto_at = nowstamp
+                    elif veto_hold_active:
+                        # Veto hold window: fp_conf briefly dropped but the veto was
+                        # active recently — do not allow a single-cycle dip to cause a
+                        # floor switch.
                         fingerprint_switch_veto_active = True
                     elif (
                         int(transition_context_diag.get("transition_layout_sample_count", 0) or 0) > 0
@@ -3143,6 +3160,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         state.challenger_reference_position = None
                         state.challenger_onset_time = 0.0
                         state.challenger_motion_budget_m = 0.0
+                        state.last_fingerprint_veto_at = 0.0
             else:
                 state.floor_challenger_id = None
                 state.floor_challenger_since = 0.0
@@ -3152,6 +3170,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 state.challenger_reference_position = None
                 state.challenger_onset_time = 0.0
                 state.challenger_motion_budget_m = 0.0
+                state.last_fingerprint_veto_at = 0.0
         else:
             current_floor_score = floor_evidence.get(state.floor_id, 0.0)
             floor_margin = 0.0
