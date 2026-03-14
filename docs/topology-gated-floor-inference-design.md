@@ -267,7 +267,7 @@ Unified rule:
 - If `floor_id is None` or `floor_confidence` is below the activation threshold: bypass the
   gate entirely, allow evidence competition to run freely.
 
-## Background Transition Proximity Tracker
+## Background Traversal Tracker
 
 The challenger reference position anchors the reachability gate at the onset of a challenge.
 But a legitimate transition may have already occurred before the challenger appeared. If the
