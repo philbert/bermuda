@@ -4,26 +4,26 @@
   <img src="img/ble-trilateration.jpeg" alt="BLE Trilateration" width="420">
 </p>
 
-**BLE Trilateration** is a [Home Assistant](https://home-assistant.io/) custom integration that tracks the physical location of Bluetooth Low Energy (BLE) devices inside your home using a network of BLE scanner anchors and a topology-aware trilateration engine.
+**Full 3D Bluetooth trilateration for [Home Assistant](https://home-assistant.io/) — for single and multi-storey homes.**
 
-> **Forked from [Bermuda BLE Trilateration](https://github.com/agittins/bermuda) by [@agittins](https://github.com/agittins).** Full credit to the original author for the foundational integration design. This fork continues the project as an independent effort with significant changes to the estimation pipeline, floor inference, and configuration model.
+Place a handful of cheap ESP32 or Shelly devices around your home and BLE Trilateration resolves every tracked device's position in three-dimensional space in real time. Not just "probably in the lounge" — an actual `(x, y, z)` coordinate, from which it pins the exact room and floor. It knows your house has physical laws. It won't tell you your phone is in the garage when you're upstairs in bed.
+
+> **Forked from [Bermuda BLE Trilateration](https://github.com/agittins/bermuda) by [@agittins](https://github.com/agittins).** The vision for full BLE trilateration originated with agittins, but never quite made it into Bermuda. This fork picks up that idea and runs with it — fully implementing 3D trilateration along with a new estimation pipeline, topology-gated floor inference, and a reworked configuration model.
 
 ---
 
-## What it does
+## How it works
 
-BLE Trilateration receives RSSI signal-strength readings from a set of fixed BLE scanner anchors (ESPHome bluetooth proxies, Shelly Gen2+ devices, or USB bluetooth adapters) and computes a 3D Cartesian position estimate for each tracked device. From that position it infers the device's room (Home Assistant Area) and floor.
+A network of fixed BLE scanner anchors picks up signal-strength (RSSI) advertisements from your tracked devices. BLE Trilateration runs those readings through a **topology-gated trilateration pipeline**:
 
-The core algorithm is a **topology-gated trilateration pipeline**:
-
-1. **3D geometry solve** — a weighted least-squares trilateration using all visible anchors, producing an `(x, y, z)` estimate along with a geometry-quality score.
+1. **3D geometry solve** — weighted least-squares trilateration across all visible anchors produces a full `(x, y, z)` position estimate with a geometry-quality score.
 2. **Calibration fingerprinting** — stored RSSI signatures from known room positions are matched against live readings to produce a room probability vector.
-3. **Floor reachability gate** — before a floor change is accepted, the system asks whether the device could physically have reached that floor given its recent position history and the locations of configured transition zones (stairs, lifts). Physically impossible floor changes are blocked before they can corrupt room inference.
-4. **Floor evidence fusion** — fingerprint evidence, RSSI floor evidence, and geometry-derived Z hints are combined among only the reachable floors.
-5. **Room inference** — final room assignment is made within the confirmed floor.
-6. **Hysteresis** — stability smoothing is applied at legitimate room boundaries, not as a first line of defense against impossible teleportation.
+3. **Floor reachability gate** — before any floor change is accepted, the system asks: *could this device physically have reached that floor?* It checks the device's recent position history against configured transition zones (stairs, lifts). Physically impossible floor changes are blocked outright before they can corrupt room inference.
+4. **Floor evidence fusion** — fingerprint evidence, RSSI floor evidence, and geometry-derived Z hints are combined — but only among floors the device could actually reach.
+5. **Room inference** — final room assignment is locked in within the confirmed floor.
+6. **Hysteresis** — stability smoothing is applied only at legitimate room boundaries, not as a band-aid for impossible teleportation.
 
-The key design principle is that **topology and physical reachability are first-class constraints**, not post-hoc vetoes. A device that was stable in a room on one floor cannot appear on another floor two seconds later unless it passed through a configured transition zone.
+The key design principle: **topology and physical reachability are hard constraints, not suggestions.** A device stable in a room on one floor cannot be assigned to another floor two seconds later unless it passed through a configured transition zone. The physics of your house are baked in.
 
 ### What you get
 
@@ -122,7 +122,7 @@ The integration uses these values to derive a **phone-height band** (`floor_z_m`
 
 Calibration samples are RSSI fingerprints recorded at known positions. They allow the classifier to distinguish rooms whose RSSI patterns differ even when trilateration geometry is ambiguous.
 
-In **Configure → Calibration Samples → Record New Sample**:
+In **Settings → Developer tools → Actions → Record Calibration Sample**:
 1. Stand (or place your tracked device) at a representative position in a room
 2. Choose the room/area and confirm the `(x, y, z)` position
 3. Let the integration record for 60 seconds
@@ -135,13 +135,13 @@ In **Configure → Calibration Samples → Record New Sample**:
 
 ---
 
-### Stage 5: Record Transition Zones (Multi-Floor Homes)
+### Stage 5: Record Transition Zones
 
 Transition zones tell the integration where floor changes are physically possible — typically stairs, lifts, or ramps.
 
 Without transition zones configured for a floor pair, the integration falls back to evidence-only floor inference with no topology gate for that pair.
 
-In **Configure → Transition Samples → Record New Zone**:
+In **Settings → Developer tools → Actions → Record Transition Sample**:
 1. Stand at the entry point of the transition (e.g. the bottom of the stairs)
 2. Record a capture — this records your position and current RSSI fingerprint
 3. Stand at the exit point of the transition (e.g. the top of the stairs) and record a second capture
