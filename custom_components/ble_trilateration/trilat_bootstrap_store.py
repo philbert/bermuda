@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 STORAGE_VERSION = 1
-STORAGE_KEY = "bermuda/trilat_bootstrap"
+STORAGE_KEY = "ble_trilateration/trilat_bootstrap"
 SAVE_DELAY_S = 1.0
 
 

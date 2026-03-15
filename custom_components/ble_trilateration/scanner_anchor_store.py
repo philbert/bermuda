@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .bermuda_device import BermudaDevice
 
 STORAGE_VERSION = 1
-STORAGE_SUBDIR = "bermuda"
+STORAGE_SUBDIR = "ble_trilateration"
 STORAGE_KEY = f"{STORAGE_SUBDIR}/scanner_anchors"
 
 

@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 STORAGE_VERSION = 1
-STORAGE_KEY = "bermuda/floor_config"
+STORAGE_KEY = "ble_trilateration/floor_config"
 
 
 @dataclass

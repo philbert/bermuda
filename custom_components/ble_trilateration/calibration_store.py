@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 STORAGE_VERSION = 1
-STORAGE_KEY = "bermuda/calibration_samples"
+STORAGE_KEY = "ble_trilateration/calibration_samples"
 
 
 class BermudaCalibrationStore:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-STORAGE_KEY = "bermuda/transition_zones"
+STORAGE_KEY = "ble_trilateration/transition_zones"
 STORAGE_VERSION = 1
 
 
