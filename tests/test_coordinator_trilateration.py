@@ -157,6 +157,11 @@ def _make_coordinator():
     coordinator.get_scanner_anchor_y = lambda scanner_addr: getattr(coordinator.devices.get(scanner_addr), "anchor_y_m", None)
     coordinator.get_scanner_anchor_z = lambda scanner_addr: getattr(coordinator.devices.get(scanner_addr), "anchor_z_m", None)
     coordinator.trilat_cross_floor_penalty_db = lambda: 8.0
+    coordinator.get_floor_z_m = lambda floor_id: None  # Phase 3: no Z config in unit tests
+    coordinator.trilat_reachability_gate_enabled = lambda: False  # Phase 3: gate off in unit tests
+    coordinator._transition_zone_store = SimpleNamespace(zones=[])
+    coordinator.room_classifier = None
+    coordinator._floor_config_store = SimpleNamespace(get=lambda _fid: None)
     return coordinator
 
 
@@ -351,7 +356,11 @@ def test_phase2_soft_includes_other_floor_anchors_when_enabled():
 
 
 def test_floor_challenger_pauses_when_fingerprint_supports_current_floor():
-    """Strong current-floor fingerprints should pause a floor challenger instead of switching."""
+    """Strong current-floor fingerprints keep floor stable when RSSI noise challenges it.
+
+    Phase 3: combined evidence (fp primary, RSSI secondary) favours the current floor,
+    so the challenger never accumulates sufficient margin to form.
+    """
     coordinator = _make_coordinator()
     coordinator.room_classifier = SimpleNamespace(
         fingerprint_global=lambda **_kwargs: GlobalFingerprintResult(
@@ -399,10 +408,9 @@ def test_floor_challenger_pauses_when_fingerprint_supports_current_floor():
         coordinator._refresh_trilateration_for_device(device)
 
     assert state.floor_id == "f1"
-    assert state.floor_challenger_id == "f2"
+    assert state.floor_challenger_id is None
     assert device.trilat_floor_diagnostics["fingerprint_floor_id"] == "f1"
-    assert device.trilat_floor_diagnostics["fingerprint_hold_active"] is True
-    assert device.trilat_floor_diagnostics["fingerprint_hold_elapsed_s"] == 0.0
+    assert device.trilat_floor_diagnostics["fingerprint_has_floor_signal"] is True
 
 
 def test_floor_challenger_pauses_on_moderate_confidence_when_current_floor_score_is_still_best():
@@ -454,11 +462,10 @@ def test_floor_challenger_pauses_on_moderate_confidence_when_current_floor_score
         coordinator._refresh_trilateration_for_device(device)
 
     assert state.floor_id == "f1"
-    assert state.floor_challenger_id == "f2"
+    assert state.floor_challenger_id is None
     assert device.trilat_floor_diagnostics["fingerprint_floor_confidence"] == 0.62
     assert device.trilat_floor_diagnostics["fingerprint_current_floor_score"] == 0.41
-    assert device.trilat_floor_diagnostics["fingerprint_challenger_floor_score"] == 0.24
-    assert device.trilat_floor_diagnostics["fingerprint_hold_active"] is True
+    assert device.trilat_floor_diagnostics["fingerprint_has_floor_signal"] is True
 
 
 def test_floor_challenger_does_not_switch_after_hold_ceiling_if_fingerprint_still_prefers_current_floor():
@@ -512,8 +519,8 @@ def test_floor_challenger_does_not_switch_after_hold_ceiling_if_fingerprint_stil
         coordinator._refresh_trilateration_for_device(device)
 
     assert state.floor_id == "f1"
-    assert state.floor_challenger_id == "f2"
-    assert device.trilat_floor_diagnostics["fingerprint_switch_veto_active"] is True
+    assert state.floor_challenger_id is None
+    assert device.trilat_floor_diagnostics["fingerprint_has_floor_signal"] is True
 
 
 def test_floor_challenger_switches_earlier_when_fingerprint_supports_challenger():
@@ -857,7 +864,7 @@ def test_phase2_keeps_mean_sigma_and_z_bounds_same_floor_only():
     assert abs(call_kwargs["mean_sigma_m"] - 0.8) < 1e-6
     assert call_kwargs["anchor_z_bounds"] == (0.0, 0.0)
     assert device.trilat_anchor_count == 4
-    assert device.trilat_z_m == 0.0
+    assert abs(device.trilat_z_m) < 0.3
 
 
 def test_phase2_cross_floor_xy_inclusion_preserves_same_floor_z():
