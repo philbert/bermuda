@@ -2929,7 +2929,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         floors = sorted({floor_id for floor_id, _rssi in evidence_inputs})
-        floor_evidence: dict[str, float] = {}
+
+        # Phase 3: Signal priority reorder — fingerprint (primary), RSSI (secondary), Z hint (tertiary).
+        # RSSI floor evidence (secondary signal)
+        rssi_floor_evidence: dict[str, float] = {}
         for candidate_floor_id in floors:
             evidence = 0.0
             for scanner_floor_id, rssi_for_score in evidence_inputs:
@@ -2939,7 +2942,50 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     else rssi_for_score - penalty_db
                 )
                 evidence += self._score_rssi(adjusted_rssi)
-            floor_evidence[candidate_floor_id] = evidence
+            rssi_floor_evidence[candidate_floor_id] = evidence
+
+        # Fingerprint floor scores (primary signal)
+        fingerprint_has_floor_signal = fingerprint_result.reason in {"ok", "room_ambiguity"}
+
+        # Z-derived floor hint (tertiary) — uses phone-height band per floor when trilat_z_m is solved
+        z_floor_scores: dict[str, float] = {}
+        if device.trilat_z_m is not None:
+            for fid in floors:
+                fz_m = self.get_floor_z_m(fid)
+                if fz_m is not None:
+                    phone_z = fz_m + self._PHONE_HEIGHT_Z_CENTER_M
+                    z_diff = device.trilat_z_m - phone_z
+                    z_floor_scores[fid] = math.exp(-0.5 * (z_diff / self._PHONE_HEIGHT_Z_SIGMA_M) ** 2)
+
+        # Combine signals: normalise each to [0,1] fraction, then weight-blend.
+        # Falls back to pure RSSI when fingerprint and Z evidence are absent.
+        total_rssi = sum(rssi_floor_evidence.values()) or 1e-9
+        rssi_norm = {fid: v / total_rssi for fid, v in rssi_floor_evidence.items()}
+        _fp_norm: dict[str, float] = {}
+        _z_norm: dict[str, float] = {}
+        if fingerprint_has_floor_signal and fingerprint_result.floor_scores:
+            total_fp = sum(fingerprint_result.floor_scores.values()) or 1e-9
+            _fp_norm = {fid: fingerprint_result.floor_scores.get(fid, 0.0) / total_fp for fid in floors}
+        if z_floor_scores:
+            total_z = sum(z_floor_scores.values()) or 1e-9
+            _z_norm = {fid: z_floor_scores.get(fid, 0.0) / total_z for fid in floors}
+        if _fp_norm and _z_norm:
+            floor_evidence: dict[str, float] = {
+                fid: _fp_norm.get(fid, 0.0) * 0.55 + rssi_norm.get(fid, 0.0) * 0.30 + _z_norm.get(fid, 0.0) * 0.15
+                for fid in floors
+            }
+        elif _fp_norm:
+            floor_evidence = {
+                fid: _fp_norm.get(fid, 0.0) * 0.65 + rssi_norm.get(fid, 0.0) * 0.35
+                for fid in floors
+            }
+        elif _z_norm:
+            floor_evidence = {
+                fid: rssi_norm.get(fid, 0.0) * 0.70 + _z_norm.get(fid, 0.0) * 0.30
+                for fid in floors
+            }
+        else:
+            floor_evidence = rssi_floor_evidence
 
         ranked_floors = sorted(floor_evidence.items(), key=lambda row: row[1], reverse=True)
         best_floor_id, best_floor_score = ranked_floors[0]
@@ -2984,6 +3030,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         transition_recent_support_01 = 0.0
         transition_recent_age_s: float | None = None
         transition_dwell_reduction_applied = False
+        _gate_result_pre: ReachabilityDecision | None = None
         if state.floor_id is None:
             state.floor_id = best_floor_id
             state.floor_challenger_id = None
@@ -2998,173 +3045,198 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             effective_required_dwell_s = float(policy.floor_dwell_seconds)
 
             if floor_margin >= required_margin:
-                if state.floor_challenger_id != best_floor_id:
-                    state.floor_challenger_id = best_floor_id
-                    state.floor_challenger_since = nowstamp
-                    state.challenger_fingerprint_hold_since = 0.0
-                    state.challenger_fingerprint_hold_total_s = 0.0
-                    state.challenger_fingerprint_hold_expired = False
-                    state.last_fingerprint_veto_at = 0.0
-                    # Use last known good position as reference — more reliable than the
-                    # current position at challenger onset, which may already be degraded.
-                    # Only use it if it was recorded recently (within 2x the traversal window).
-                    if (
-                        state.last_good_position is not None
-                        and (nowstamp - state.last_good_position_at) < self._ZONE_TRAVERSAL_RECENCY_S * 2
-                    ):
-                        state.challenger_reference_position = state.last_good_position
-                    else:
-                        state.challenger_reference_position = None
-                    state.challenger_onset_time = nowstamp
-                    state.challenger_motion_budget_m = 0.0
-
-                current_floor_fp_score = fingerprint_result.floor_scores.get(state.floor_id, 0.0) if state.floor_id else 0.0
-                challenger_floor_fp_score = (
-                    fingerprint_result.floor_scores.get(state.floor_challenger_id, 0.0)
-                    if state.floor_challenger_id
-                    else 0.0
-                )
-                fingerprint_has_floor_signal = fingerprint_result.reason in {"ok", "room_ambiguity"}
-                current_floor_fp_ratio = (
-                    current_floor_fp_score / max(challenger_floor_fp_score, 1e-9)
-                    if current_floor_fp_score > 0.0
-                    else 0.0
-                )
-                challenger_floor_fp_ratio = (
-                    challenger_floor_fp_score / max(current_floor_fp_score, 1e-9)
-                    if challenger_floor_fp_score > 0.0
-                    else 0.0
-                )
-                fingerprint_supports_current_floor = (
-                    fingerprint_has_floor_signal
-                    and fingerprint_result.floor_id == state.floor_id
-                    and (
-                        fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_HIGH
-                        or (
-                            fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_MODERATE
-                            and current_floor_fp_ratio >= self._TRILAT_FINGERPRINT_FLOOR_SCORE_RATIO_HOLD
-                        )
-                    )
-                )
-                fingerprint_supports_challenger = (
-                    fingerprint_has_floor_signal
-                    and fingerprint_result.floor_id == state.floor_challenger_id
-                    and (
-                        fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_HIGH
-                        or (
-                            fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_MODERATE
-                            and challenger_floor_fp_ratio >= self._TRILAT_FINGERPRINT_FLOOR_SCORE_RATIO_HOLD
-                        )
-                    )
-                )
-
-                if fingerprint_supports_current_floor and not state.challenger_fingerprint_hold_expired:
-                    if state.challenger_fingerprint_hold_since <= 0.0:
-                        state.challenger_fingerprint_hold_since = nowstamp
-                    active_hold_s = max(0.0, nowstamp - state.challenger_fingerprint_hold_since)
-                    projected_hold_s = state.challenger_fingerprint_hold_total_s + active_hold_s
-                    if projected_hold_s < fingerprint_hold_ceiling_s:
-                        fingerprint_hold_active = True
-                        fingerprint_hold_elapsed_s = projected_hold_s
-                    else:
-                        state.challenger_fingerprint_hold_total_s = fingerprint_hold_ceiling_s
-                        state.challenger_fingerprint_hold_since = 0.0
-                        state.challenger_fingerprint_hold_expired = True
-                        fingerprint_hold_elapsed_s = state.challenger_fingerprint_hold_total_s
-                else:
-                    if state.challenger_fingerprint_hold_since > 0.0:
-                        state.challenger_fingerprint_hold_total_s += max(
-                            0.0,
-                            nowstamp - state.challenger_fingerprint_hold_since,
-                        )
-                        state.challenger_fingerprint_hold_since = 0.0
-                    fingerprint_hold_elapsed_s = state.challenger_fingerprint_hold_total_s
-
-                if fingerprint_supports_challenger:
-                    effective_required_dwell_s *= 0.5
-
-                transition_immediate_support_01 = _transition_support_for_challenger(state.floor_challenger_id)
-                transition_recent_support_01, transition_recent_age_s = _recent_transition_support_for_challenger(
-                    state.floor_challenger_id
-                )
-                transition_support_01 = max(transition_immediate_support_01, transition_recent_support_01)
-                if transition_support_01 > self._TRILAT_TRANSITION_SUPPORT_REQUIRED:
-                    effective_required_dwell_s *= (1.0 - (0.4 * transition_support_01))
-                    transition_dwell_reduction_applied = True
-
-                # Update motion budget while challenger is active
-                if state.floor_challenger_id is not None and state.challenger_onset_time > 0.0:
-                    elapsed_s = max(0.0, nowstamp - state.challenger_onset_time)
-                    # Use max velocity as conservative upper bound (velocity tracking not yet available)
-                    budget_from_elapsed = elapsed_s * self._TRILAT_MAX_POSITION_SPEED_MPS
-                    state.challenger_motion_budget_m = min(
-                        budget_from_elapsed + self._CHALLENGER_UNCERTAINTY_BUDGET_M,
-                        self._CHALLENGER_MAX_MOTION_BUDGET_M,
-                    )
-
-                challenger_effective_dwell_s = max(
-                    0.0,
-                    (nowstamp - state.floor_challenger_since) - fingerprint_hold_elapsed_s,
-                )
-
-                # Reachability gate
+                # Phase 3: Reachability gate runs BEFORE challenger forms.
+                # Evaluate the gate immediately to decide whether to allow
+                # evidence competition for this floor pair.
                 _gate_blocked = False
-                if self.trilat_reachability_gate_enabled() and state.floor_challenger_id is not None:
-                    _gate_result = self._reachability_gate.evaluate(
+                if self.trilat_reachability_gate_enabled():
+                    _is_new_challenger = state.floor_challenger_id != best_floor_id
+                    if _is_new_challenger:
+                        # For a new challenger, use last_good_position as reference.
+                        candidate_ref = (
+                            state.last_good_position
+                            if (
+                                state.last_good_position is not None
+                                and (nowstamp - state.last_good_position_at) < self._ZONE_TRAVERSAL_RECENCY_S * 2
+                            )
+                            else None
+                        )
+                        candidate_budget_m = 0.0
+                    else:
+                        # For an ongoing challenger, use stored reference and accumulated budget.
+                        candidate_ref = state.challenger_reference_position
+                        candidate_budget_m = state.challenger_motion_budget_m
+                    _gate_result_pre = self._reachability_gate.evaluate(
                         from_floor_id=state.floor_id,
-                        to_floor_id=state.floor_challenger_id,
+                        to_floor_id=best_floor_id,
                         floor_confidence=state.floor_confidence,
                         floor_confidence_threshold=self._FLOOR_CONFIDENCE_GATE_THRESHOLD,
-                        reference_position=state.challenger_reference_position,
-                        motion_budget_m=state.challenger_motion_budget_m,
+                        reference_position=candidate_ref,
+                        motion_budget_m=candidate_budget_m,
                         zones=self._transition_zone_store.zones,
                         zone_traversal_history=state.zone_traversal_history,
                         nowstamp=nowstamp,
                         traversal_recency_s=self._ZONE_TRAVERSAL_RECENCY_S,
                         layout_hash=layout_hash,
                     )
-                    _gate_blocked = not _gate_result.allowed
-                    # Always log diagnostics regardless of gate outcome
-                    if hasattr(device, 'trilat_floor_diagnostics') and isinstance(device.trilat_floor_diagnostics, dict):
-                        device.trilat_floor_diagnostics.update({
-                            "reachability_gate_allowed": _gate_result.allowed,
-                            "reachability_gate_reason": _gate_result.reason,
-                            "reachability_gate_budget_m": _gate_result.motion_budget_m,
-                            "reachability_gate_nearest_m": _gate_result.nearest_zone_distance_m,
-                        })
+                    _gate_blocked = not _gate_result_pre.allowed
 
-                veto_hold_active = (
-                    nowstamp - state.last_fingerprint_veto_at
-                ) < self._FINGERPRINT_VETO_HOLD_S
-                if not _gate_blocked and not fingerprint_hold_active and challenger_effective_dwell_s >= effective_required_dwell_s:
-                    if fingerprint_supports_current_floor:
-                        fingerprint_switch_veto_active = True
-                        state.last_fingerprint_veto_at = nowstamp
-                    elif veto_hold_active:
-                        # Veto hold window: fp_conf briefly dropped but the veto was
-                        # active recently — do not allow a single-cycle dip to cause a
-                        # floor switch.
-                        fingerprint_switch_veto_active = True
-                    elif (
-                        int(transition_context_diag.get("transition_layout_sample_count", 0) or 0) > 0
-                        and transition_support_01 <= self._TRILAT_TRANSITION_SUPPORT_REQUIRED
-                        and fingerprint_has_floor_signal
-                        and state.floor_id is not None
-                        and current_floor_fp_score >= challenger_floor_fp_score
-                    ):
-                        transition_switch_veto_active = True
-                    else:
-                        state.floor_id = best_floor_id
-                        state.floor_challenger_id = None
-                        state.floor_challenger_since = 0.0
+                if _gate_blocked:
+                    # Gate blocks before challenger can form or accumulate dwell.
+                    state.floor_challenger_id = None
+                    state.floor_challenger_since = 0.0
+                    state.challenger_fingerprint_hold_since = 0.0
+                    state.challenger_fingerprint_hold_total_s = 0.0
+                    state.challenger_fingerprint_hold_expired = False
+                    state.challenger_reference_position = None
+                    state.challenger_onset_time = 0.0
+                    state.challenger_motion_budget_m = 0.0
+                    state.last_fingerprint_veto_at = 0.0
+                else:
+                    # Gate allows (or not enabled): form or continue challenger.
+                    if state.floor_challenger_id != best_floor_id:
+                        state.floor_challenger_id = best_floor_id
+                        state.floor_challenger_since = nowstamp
                         state.challenger_fingerprint_hold_since = 0.0
                         state.challenger_fingerprint_hold_total_s = 0.0
                         state.challenger_fingerprint_hold_expired = False
-                        state.challenger_reference_position = None
-                        state.challenger_onset_time = 0.0
-                        state.challenger_motion_budget_m = 0.0
                         state.last_fingerprint_veto_at = 0.0
+                        # Use last known good position as reference — more reliable than the
+                        # current position at challenger onset, which may already be degraded.
+                        # Only use it if it was recorded recently (within 2x the traversal window).
+                        if (
+                            state.last_good_position is not None
+                            and (nowstamp - state.last_good_position_at) < self._ZONE_TRAVERSAL_RECENCY_S * 2
+                        ):
+                            state.challenger_reference_position = state.last_good_position
+                        else:
+                            state.challenger_reference_position = None
+                        state.challenger_onset_time = nowstamp
+                        state.challenger_motion_budget_m = 0.0
+
+                    current_floor_fp_score = fingerprint_result.floor_scores.get(state.floor_id, 0.0) if state.floor_id else 0.0
+                    challenger_floor_fp_score = (
+                        fingerprint_result.floor_scores.get(state.floor_challenger_id, 0.0)
+                        if state.floor_challenger_id
+                        else 0.0
+                    )
+                    current_floor_fp_ratio = (
+                        current_floor_fp_score / max(challenger_floor_fp_score, 1e-9)
+                        if current_floor_fp_score > 0.0
+                        else 0.0
+                    )
+                    challenger_floor_fp_ratio = (
+                        challenger_floor_fp_score / max(current_floor_fp_score, 1e-9)
+                        if challenger_floor_fp_score > 0.0
+                        else 0.0
+                    )
+                    fingerprint_supports_current_floor = (
+                        fingerprint_has_floor_signal
+                        and fingerprint_result.floor_id == state.floor_id
+                        and (
+                            fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_HIGH
+                            or (
+                                fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_MODERATE
+                                and current_floor_fp_ratio >= self._TRILAT_FINGERPRINT_FLOOR_SCORE_RATIO_HOLD
+                            )
+                        )
+                    )
+                    fingerprint_supports_challenger = (
+                        fingerprint_has_floor_signal
+                        and fingerprint_result.floor_id == state.floor_challenger_id
+                        and (
+                            fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_HIGH
+                            or (
+                                fingerprint_result.floor_confidence >= self._TRILAT_FINGERPRINT_FLOOR_CONFIDENCE_MODERATE
+                                and challenger_floor_fp_ratio >= self._TRILAT_FINGERPRINT_FLOOR_SCORE_RATIO_HOLD
+                            )
+                        )
+                    )
+
+                    if fingerprint_supports_current_floor and not state.challenger_fingerprint_hold_expired:
+                        if state.challenger_fingerprint_hold_since <= 0.0:
+                            state.challenger_fingerprint_hold_since = nowstamp
+                        active_hold_s = max(0.0, nowstamp - state.challenger_fingerprint_hold_since)
+                        projected_hold_s = state.challenger_fingerprint_hold_total_s + active_hold_s
+                        if projected_hold_s < fingerprint_hold_ceiling_s:
+                            fingerprint_hold_active = True
+                            fingerprint_hold_elapsed_s = projected_hold_s
+                        else:
+                            state.challenger_fingerprint_hold_total_s = fingerprint_hold_ceiling_s
+                            state.challenger_fingerprint_hold_since = 0.0
+                            state.challenger_fingerprint_hold_expired = True
+                            fingerprint_hold_elapsed_s = state.challenger_fingerprint_hold_total_s
+                    else:
+                        if state.challenger_fingerprint_hold_since > 0.0:
+                            state.challenger_fingerprint_hold_total_s += max(
+                                0.0,
+                                nowstamp - state.challenger_fingerprint_hold_since,
+                            )
+                            state.challenger_fingerprint_hold_since = 0.0
+                        fingerprint_hold_elapsed_s = state.challenger_fingerprint_hold_total_s
+
+                    if fingerprint_supports_challenger:
+                        effective_required_dwell_s *= 0.5
+
+                    transition_immediate_support_01 = _transition_support_for_challenger(state.floor_challenger_id)
+                    transition_recent_support_01, transition_recent_age_s = _recent_transition_support_for_challenger(
+                        state.floor_challenger_id
+                    )
+                    transition_support_01 = max(transition_immediate_support_01, transition_recent_support_01)
+                    if transition_support_01 > self._TRILAT_TRANSITION_SUPPORT_REQUIRED:
+                        effective_required_dwell_s *= (1.0 - (0.4 * transition_support_01))
+                        transition_dwell_reduction_applied = True
+
+                    # Update motion budget while challenger is active
+                    if state.floor_challenger_id is not None and state.challenger_onset_time > 0.0:
+                        elapsed_s = max(0.0, nowstamp - state.challenger_onset_time)
+                        budget_from_elapsed = elapsed_s * self._TRILAT_MAX_POSITION_SPEED_MPS
+                        state.challenger_motion_budget_m = min(
+                            budget_from_elapsed + self._CHALLENGER_UNCERTAINTY_BUDGET_M,
+                            self._CHALLENGER_MAX_MOTION_BUDGET_M,
+                        )
+
+                    challenger_effective_dwell_s = max(
+                        0.0,
+                        (nowstamp - state.floor_challenger_since) - fingerprint_hold_elapsed_s,
+                    )
+
+                    # Hysteresis is the last line of defence (Phase 3 priority order).
+                    veto_hold_active = (
+                        nowstamp - state.last_fingerprint_veto_at
+                    ) < self._FINGERPRINT_VETO_HOLD_S
+                    if not fingerprint_hold_active and challenger_effective_dwell_s >= effective_required_dwell_s:
+                        if fingerprint_supports_current_floor:
+                            # Safety net: combined evidence already de-prioritises this
+                            # challenger via fingerprint weighting, but veto if it still
+                            # somehow reaches dwell with fp strongly favouring current.
+                            fingerprint_switch_veto_active = True
+                            state.last_fingerprint_veto_at = nowstamp
+                        elif veto_hold_active:
+                            # Veto hold window: fp_conf briefly dropped but the veto was
+                            # active recently — do not allow a single-cycle dip to switch.
+                            fingerprint_switch_veto_active = True
+                        elif (
+                            int(transition_context_diag.get("transition_layout_sample_count", 0) or 0) > 0
+                            and transition_support_01 <= self._TRILAT_TRANSITION_SUPPORT_REQUIRED
+                            and fingerprint_has_floor_signal
+                            and state.floor_id is not None
+                            and current_floor_fp_score >= challenger_floor_fp_score
+                        ):
+                            transition_switch_veto_active = True
+                        else:
+                            state.floor_id = best_floor_id
+                            state.floor_challenger_id = None
+                            state.floor_challenger_since = 0.0
+                            state.challenger_fingerprint_hold_since = 0.0
+                            state.challenger_fingerprint_hold_total_s = 0.0
+                            state.challenger_fingerprint_hold_expired = False
+                            state.challenger_reference_position = None
+                            state.challenger_onset_time = 0.0
+                            state.challenger_motion_budget_m = 0.0
+                            state.last_fingerprint_veto_at = 0.0
             else:
+                _gate_result_pre = None
                 state.floor_challenger_id = None
                 state.floor_challenger_since = 0.0
                 state.challenger_fingerprint_hold_since = 0.0
@@ -3223,6 +3295,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             transition_switch_veto_active=transition_switch_veto_active,
             transition_dwell_reduction_applied=transition_dwell_reduction_applied,
         )
+        # Augment diagnostics with Phase 3 signal breakdown and gate result.
+        device.trilat_floor_diagnostics["rssi_floor_evidence"] = rssi_floor_evidence
+        device.trilat_floor_diagnostics["z_floor_scores"] = z_floor_scores
+        device.trilat_floor_diagnostics["fingerprint_has_floor_signal"] = fingerprint_has_floor_signal
+        if _gate_result_pre is not None:
+            device.trilat_floor_diagnostics["reachability_gate_allowed"] = _gate_result_pre.allowed
+            device.trilat_floor_diagnostics["reachability_gate_reason"] = _gate_result_pre.reason
+            device.trilat_floor_diagnostics["reachability_gate_budget_m"] = _gate_result_pre.motion_budget_m
+            device.trilat_floor_diagnostics["reachability_gate_nearest_m"] = _gate_result_pre.nearest_zone_distance_m
 
         if prev_floor_id is not None and selected_floor_id != prev_floor_id:
             state.last_floor_change_at = nowstamp
