@@ -1,7 +1,7 @@
 # BLE Trilateration
 
 <p align="center">
-  <img src="img/ble-trilateration.jpeg" alt="BLE Trilateration" width="420">
+  <img src="https://raw.githubusercontent.com/philbert/ble-trilateration/main/img/ble-trilateration.jpeg" alt="BLE Trilateration" width="420">
 </p>
 
 **Full 3D Bluetooth trilateration for [Home Assistant](https://home-assistant.io/) — for single and multi-storey homes.**
