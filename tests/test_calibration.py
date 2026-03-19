@@ -142,9 +142,7 @@ async def test_record_calibration_sample_service(hass: HomeAssistant, setup_berm
     assert "geometry_quality_01" in sample["quality"]
     assert len(sample["anchors"]) == 3
     first_anchor = next(iter(sample["anchors"].values()))
-    assert "count" not in first_anchor["buckets_1s"][0]
-    assert "rssi_median" not in first_anchor["buckets_1s"][0]
-    assert "rssi" in first_anchor["buckets_1s"][0]
+    assert "buckets_1s" not in first_anchor
 
 
 async def test_record_calibration_sample_service_accepts_legacy_room_radius(hass: HomeAssistant, setup_bermuda_entry):

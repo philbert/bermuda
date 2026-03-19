@@ -50,7 +50,6 @@ class _AnchorObservationAccumulator:
     scanner_name: str
     anchor_position: dict[str, float | None]
     values: list[float] = field(default_factory=list)
-    buckets: dict[int, list[float]] = field(default_factory=dict)
     first_seen_at: str | None = None
     last_seen_at: str | None = None
 
@@ -745,7 +744,6 @@ class BermudaCalibrationManager:
         nowstamp: float,
     ) -> None:
         """Add one snapshot observation for an active session."""
-        offset_s = min(max(int(nowstamp - session.started_monotonic), 0), max(session.duration_s - 1, 0))
         scanner = self._coordinator.devices.get(advert.scanner_address)
         accumulator = session.anchors.setdefault(
             advert.scanner_address,
@@ -761,7 +759,6 @@ class BermudaCalibrationManager:
         )
         value = float(advert.rssi)
         accumulator.values.append(value)
-        accumulator.buckets.setdefault(offset_s, []).append(value)
         if accumulator.first_seen_at is None:
             accumulator.first_seen_at = observed_at
         accumulator.last_seen_at = observed_at
@@ -895,13 +892,6 @@ class BermudaCalibrationManager:
                 "rssi_max": rssi_max,
                 "first_seen_at": accumulator.first_seen_at,
                 "last_seen_at": accumulator.last_seen_at,
-                "buckets_1s": [
-                    {
-                        "offset_s": offset_s,
-                        "rssi": round(statistics.median(values), 3),
-                    }
-                    for offset_s, values in sorted(accumulator.buckets.items())
-                ],
             }
 
         quality_status = CALIBRATION_QUALITY_ACCEPTED
