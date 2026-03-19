@@ -3962,9 +3962,22 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         # Using new API in 2025.2
         _new_ha_scanners = set(self._manager.async_current_scanners())
 
-        if _new_ha_scanners is self._hascanners or _new_ha_scanners == self._hascanners:
+        if _new_ha_scanners is self._hascanners:
             # No changes.
             return
+
+        if _new_ha_scanners == self._hascanners:
+            # Some backends replace scanner objects during reconnects while keeping the
+            # same source address. Equality on the scanner set can therefore hide a
+            # live-object replacement, which would leave us polling a dead scanner
+            # instance forever.
+            old_by_source = {mac_norm(scanner.source): scanner for scanner in self._hascanners}
+            new_by_source = {mac_norm(scanner.source): scanner for scanner in _new_ha_scanners}
+            if (
+                old_by_source.keys() == new_by_source.keys()
+                and all(old_by_source[source] is new_by_source[source] for source in old_by_source)
+            ):
+                return
 
         _LOGGER.debug("HA Base Scanner Set has changed, rebuilding.")
         self._hascanners = _new_ha_scanners

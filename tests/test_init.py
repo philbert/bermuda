@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from types import SimpleNamespace
+
 from homeassistant.core import HomeAssistant
 
 # from homeassistant.exceptions import ConfigEntryNotReady
@@ -57,3 +60,43 @@ async def test_setup_entry_exception(hass, error_on_get_data):
     # anything will "catch" our over-ridded async_refresh's exception.
     #  with pytest.raises(ConfigEntryNotReady):
     #     assert await async_setup_entry(hass, config_entry)
+
+
+@dataclass(eq=False)
+class _FakeScanner:
+    """Minimal scanner object with source-based equality."""
+
+    source: str
+    age_s: float
+    name: str = "Fake Scanner"
+    discovered_devices_and_advertisement_data: dict = None
+
+    def time_since_last_detection(self) -> float:
+        """Return the configured age."""
+        return self.age_s
+
+    def __hash__(self) -> int:
+        return hash(self.source)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _FakeScanner) and self.source == other.source
+
+
+async def test_refresh_scanners_replaces_equal_source_scanner_object(setup_bermuda_entry: MockConfigEntry):
+    """Scanner refresh must replace HA scanner objects after reconnects."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    scanner_v1 = _FakeScanner("10:06:1c:16:69:ca", 120.0)
+    scanner_v2 = _FakeScanner("10:06:1c:16:69:ca", 1.0)
+
+    coordinator._manager = SimpleNamespace(async_current_scanners=lambda: [scanner_v1])
+    coordinator._refresh_scanners(force=True)
+
+    scanner_device = coordinator.devices["10:06:1c:16:69:ca"]
+    assert scanner_device._hascanner is scanner_v1
+
+    coordinator._manager = SimpleNamespace(async_current_scanners=lambda: [scanner_v2])
+    coordinator._refresh_scanners()
+
+    assert scanner_device._hascanner is scanner_v2
+    assert next(iter(coordinator._hascanners)) is scanner_v2
