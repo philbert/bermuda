@@ -670,7 +670,7 @@ async def test_calibration_layout_mismatch_can_update_samples(hass: HomeAssistan
 
 
 async def test_calibration_layout_mismatch_can_be_acknowledged(hass: HomeAssistant, setup_bermuda_entry):
-    """Acknowledging a layout mismatch suppresses the repair condition for the current hash."""
+    """Acknowledging a layout mismatch suppresses the repair condition for the current geometry."""
     coordinator = setup_bermuda_entry.runtime_data.coordinator
 
     scanner = BermudaDevice("aa:bb:cc:dd:10:31", coordinator)
@@ -696,7 +696,7 @@ async def test_calibration_layout_mismatch_can_be_acknowledged(hass: HomeAssista
             "anchors": {
                 scanner.address: {
                     "scanner_name": scanner.name,
-                    "anchor_position": {"x_m": 5.0, "y_m": 6.0, "z_m": 1.0},
+                    "anchor_position": {"x_m": 4.5, "y_m": 6.0, "z_m": 1.0},
                     "rssi_median": -70.0,
                 }
             },
@@ -714,6 +714,9 @@ async def test_calibration_layout_mismatch_raises_repair(
 ):
     """A layout mismatch should create a fixable repair issue."""
     coordinator = setup_bermuda_entry.runtime_data.coordinator
+    coordinator._cancel_calibration_layout_mismatch_grace()
+    coordinator._calibration_layout_mismatch_grace_active = False
+    coordinator._calibration_layout_mismatch_grace_deadline = None
 
     scanner = BermudaDevice("aa:bb:cc:dd:10:41", coordinator)
     scanner.name = "Garage Proxy"
@@ -752,7 +755,7 @@ async def test_calibration_layout_mismatch_raises_repair(
     issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
     assert issue is not None
     assert issue.is_fixable is True
-    assert "Calibration layout mismatch detected" in caplog.text
+    assert "Calibration anchor mismatch detected" in caplog.text
     assert "Garage Proxy: moved 0.50 m" in caplog.text
 
 
@@ -828,6 +831,100 @@ async def test_calibration_layout_mismatch_not_raised_for_hash_only_alias_change
     assert coordinator.calibration.get_layout_mismatch_summary() is None
     issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
     assert issue is None
+
+
+async def test_calibration_layout_mismatch_not_raised_for_hash_only_same_geometry(
+    hass: HomeAssistant, setup_bermuda_entry
+):
+    """Do not raise a mismatch repair when only the stored layout hash differs."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    scanner = BermudaDevice("aa:bb:cc:dd:10:0f", coordinator)
+    scanner.name = "Hall Proxy"
+    scanner.anchor_x_m = 8.0
+    scanner.anchor_y_m = 2.0
+    scanner.anchor_z_m = 1.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_layout_same_geometry",
+            "created_at": "2026-03-06T12:00:00+00:00",
+            "device_id": "device_one",
+            "device_name": "Device One",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "hall",
+            "room_name": "Hall",
+            "position": {"x_m": 1.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": "old_layout_hash",
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 8.0, "y_m": 2.0, "z_m": 1.0},
+                    "rssi_median": -70.0,
+                }
+            },
+            "quality": {"status": "accepted", "eligible_anchor_count": 1, "reason": None},
+        }
+    )
+
+    assert coordinator.calibration.get_layout_mismatch_summary() is None
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is None
+
+
+async def test_calibration_layout_mismatch_repair_is_suppressed_during_startup_grace(
+    hass: HomeAssistant, setup_bermuda_entry
+):
+    """Delay mismatch repairs until the startup grace period has elapsed."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    scanner = BermudaDevice("aa:bb:cc:dd:10:42", coordinator)
+    scanner.name = "Office Proxy"
+    scanner.anchor_x_m = 8.0
+    scanner.anchor_y_m = 2.0
+    scanner.anchor_z_m = 1.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_layout_grace",
+            "created_at": "2026-03-06T12:00:00+00:00",
+            "device_id": "device_one",
+            "device_name": "Device One",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "office",
+            "room_name": "Office",
+            "position": {"x_m": 1.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": "old_layout_hash",
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 7.5, "y_m": 2.0, "z_m": 1.0},
+                    "rssi_median": -70.0,
+                }
+            },
+            "quality": {"status": "accepted", "eligible_anchor_count": 1, "reason": None},
+        }
+    )
+
+    coordinator._arm_calibration_layout_mismatch_grace()
+    await coordinator.async_handle_calibration_samples_changed()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is None
+
+    coordinator._cancel_calibration_layout_mismatch_grace()
+    coordinator._calibration_layout_mismatch_grace_active = False
+    coordinator._calibration_layout_mismatch_grace_deadline = None
+    await coordinator.async_handle_calibration_samples_changed()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is not None
 
 
 async def test_calibration_layout_mismatch_repair_flow_updates_samples(

@@ -52,6 +52,7 @@ from homeassistant.helpers.device_registry import (
     EventDeviceRegistryUpdatedData,
 )
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import get_age, now
 
@@ -73,6 +74,7 @@ from .const import (
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     BDADDR_TYPE_NOT_MAC48,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
+    CALIBRATION_LAYOUT_REPAIR_GRACE_SECONDS,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
     CONF_MAX_VELOCITY,
@@ -249,6 +251,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self._trilat_decision_state: dict[str, BermudaDataUpdateCoordinator.TrilatDecisionState] = {}
         self._trilat_scanners_without_anchors: list[str] | None = None
         self._calibration_layout_mismatch_signature: str | None = None
+        self._calibration_layout_mismatch_grace_active: bool = False
+        self._calibration_layout_mismatch_grace_deadline: float | None = None
+        self._calibration_layout_mismatch_grace_unsub: Cancellable | None = None
         self.calibration_store = BermudaCalibrationStore(hass, entry.entry_id)
         self.scanner_anchor_store = BermudaScannerAnchorStore(hass)
         self._transition_zone_store = BermudaTransitionZoneStore(hass)
@@ -412,6 +417,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         if migrated:
             _LOGGER.debug("Migrated %d transition sample group(s) to TransitionZone store", migrated)
         self.calibration.register_change_callback(self.async_handle_calibration_samples_changed)
+        self._arm_calibration_layout_mismatch_grace()
         self._restore_scanner_anchors_from_store()
         await self.async_handle_calibration_samples_changed()
         self._refresh_trilateration()
@@ -419,6 +425,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Tear down coordinator-owned subsystems."""
+        self._cancel_calibration_layout_mismatch_grace()
         await self._trilat_bootstrap_store.async_save()
         await self.calibration.async_shutdown()
 
@@ -430,8 +437,51 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_handle_anchor_geometry_changed(self) -> None:
         """Re-evaluate repairs that depend on configured anchor geometry."""
+        if self._calibration_layout_mismatch_grace_active:
+            self._arm_calibration_layout_mismatch_grace()
         self._async_manage_repair_calibration_layout_mismatch()
         self._async_manage_repair_trilat_without_anchors(list(self.scanner_list))
+
+    def _cancel_calibration_layout_mismatch_grace(self) -> None:
+        """Cancel any pending delayed repair re-check."""
+        if self._calibration_layout_mismatch_grace_unsub is not None:
+            self._calibration_layout_mismatch_grace_unsub()
+            self._calibration_layout_mismatch_grace_unsub = None
+
+    def _arm_calibration_layout_mismatch_grace(self) -> None:
+        """Delay mismatch repair evaluation until startup anchor restoration settles."""
+        self._cancel_calibration_layout_mismatch_grace()
+        self._calibration_layout_mismatch_grace_active = True
+        self._calibration_layout_mismatch_grace_deadline = (
+            monotonic_time_coarse() + CALIBRATION_LAYOUT_REPAIR_GRACE_SECONDS
+        )
+
+        @callback
+        def _finish_grace(_now: datetime) -> None:
+            self._calibration_layout_mismatch_grace_unsub = None
+            deadline = self._calibration_layout_mismatch_grace_deadline
+            if deadline is None:
+                self._calibration_layout_mismatch_grace_active = False
+                return
+
+            remaining = deadline - monotonic_time_coarse()
+            if remaining > 0.1:
+                self._calibration_layout_mismatch_grace_unsub = async_call_later(
+                    self.hass,
+                    remaining,
+                    _finish_grace,
+                )
+                return
+
+            self._calibration_layout_mismatch_grace_active = False
+            self._calibration_layout_mismatch_grace_deadline = None
+            self._async_manage_repair_calibration_layout_mismatch()
+
+        self._calibration_layout_mismatch_grace_unsub = async_call_later(
+            self.hass,
+            CALIBRATION_LAYOUT_REPAIR_GRACE_SECONDS,
+            _finish_grace,
+        )
 
     def _restore_scanner_anchor_from_store(self, scanner: BermudaDevice) -> bool:
         """Hydrate one scanner's anchor coordinates from Bermuda storage when available."""
@@ -2421,6 +2471,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def _async_manage_repair_calibration_layout_mismatch(self) -> None:
         """Raise or clear repair when stored calibration samples don't match the current anchor layout."""
+        if self._calibration_layout_mismatch_grace_active:
+            deadline = self._calibration_layout_mismatch_grace_deadline
+            if deadline is not None and monotonic_time_coarse() < deadline:
+                if self._calibration_layout_mismatch_signature is not None:
+                    ir.async_delete_issue(self.hass, DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+                    self._calibration_layout_mismatch_signature = None
+                return
+
         mismatch = self.calibration.get_layout_mismatch_summary()
         if mismatch is None:
             if self._calibration_layout_mismatch_signature is not None:
@@ -2443,11 +2501,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         _LOGGER.warning(
-            "Calibration layout mismatch detected; %s saved sample(s) match layout %s but current anchors are %s. "
+            "Calibration anchor mismatch detected; %s saved sample(s) do not match the current anchor geometry. "
             "Anchor coordinate changes:\n%s",
             mismatch["sample_count"],
-            mismatch["dominant_layout_hash"][:8],
-            mismatch["current_layout_hash"][:8],
             mismatch["changed_anchor_lines"],
         )
         ir.async_delete_issue(self.hass, DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)

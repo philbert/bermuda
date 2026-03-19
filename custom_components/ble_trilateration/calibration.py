@@ -136,6 +136,48 @@ class BermudaCalibrationManager:
         """Return stored transition samples."""
         return self._store.transition_samples
 
+    @staticmethod
+    def _anchor_delta_m(
+        current_anchor: dict[str, float | None],
+        sample_position: dict[str, Any],
+    ) -> float | None:
+        """Return Euclidean delta between current and stored anchor positions."""
+        sample_x = sample_position.get("x_m")
+        sample_y = sample_position.get("y_m")
+        sample_z = sample_position.get("z_m")
+        if sample_x is None or sample_y is None or sample_z is None:
+            return None
+        return math.sqrt(
+            ((float(current_anchor["x_m"]) - float(sample_x)) ** 2)
+            + ((float(current_anchor["y_m"]) - float(sample_y)) ** 2)
+            + ((float(current_anchor["z_m"]) - float(sample_z)) ** 2)
+        )
+
+    def _sample_matches_current_geometry(
+        self,
+        sample: dict[str, Any],
+        current_anchor_index: dict[str, tuple[dict[str, float | None], str | None]],
+    ) -> bool:
+        """Return true when a stored sample resolves cleanly to the current anchor geometry."""
+        anchors = sample.get("anchors") or {}
+        if not anchors:
+            return False
+
+        matched_anchor_count = 0
+        for scanner_address, anchor in anchors.items():
+            resolved = current_anchor_index.get(mac_norm(str(scanner_address)))
+            if resolved is None:
+                return False
+
+            current_anchor, _current_name = resolved
+            sample_position = anchor.get("anchor_position") or {}
+            delta_m = self._anchor_delta_m(current_anchor, sample_position)
+            if delta_m is None or delta_m >= 0.01:
+                return False
+            matched_anchor_count += 1
+
+        return matched_anchor_count > 0
+
     def get_summary(self) -> dict[str, Any]:
         """Return a small in-memory summary for config flow."""
         samples = self.samples()
@@ -143,6 +185,7 @@ class BermudaCalibrationManager:
         by_device: dict[str, int] = {}
         by_quality: dict[str, int] = {}
         current_layout_hash = self.current_anchor_layout_hash
+        current_anchor_index = self._current_anchor_identity_index()
         current_layout_count = 0
         for sample in samples:
             room_name = str(sample.get("room_name") or sample.get("room_area_id") or "Unknown")
@@ -151,7 +194,7 @@ class BermudaCalibrationManager:
             by_device[device_name] = by_device.get(device_name, 0) + 1
             quality_level = self._sample_quality_level(sample)
             by_quality[quality_level] = by_quality.get(quality_level, 0) + 1
-            if sample.get("anchor_layout_hash") == current_layout_hash:
+            if self._sample_matches_current_geometry(sample, current_anchor_index):
                 current_layout_count += 1
         recent = sorted(samples, key=lambda sample: sample.get("created_at", ""), reverse=True)[:5]
         return {
@@ -280,17 +323,9 @@ class BermudaCalibrationManager:
 
                 current_anchor, current_name = resolved
                 sample_position = anchor.get("anchor_position") or {}
-                sample_x = sample_position.get("x_m")
-                sample_y = sample_position.get("y_m")
-                sample_z = sample_position.get("z_m")
-                if sample_x is None or sample_y is None or sample_z is None:
+                delta_m = self._anchor_delta_m(current_anchor, sample_position)
+                if delta_m is None:
                     continue
-
-                delta_m = math.sqrt(
-                    ((float(current_anchor["x_m"]) - float(sample_x)) ** 2)
-                    + ((float(current_anchor["y_m"]) - float(sample_y)) ** 2)
-                    + ((float(current_anchor["z_m"]) - float(sample_z)) ** 2)
-                )
                 if delta_m < 0.01:
                     continue
 
@@ -313,10 +348,7 @@ class BermudaCalibrationManager:
         if current_layout_hash in self.acknowledged_layout_hashes:
             return None
 
-        current_layout_samples = [
-            sample for sample in samples if sample.get("anchor_layout_hash") == current_layout_hash
-        ]
-        if current_layout_samples:
+        if any(self._sample_matches_current_geometry(sample, current_anchor_index) for sample in samples):
             return None
 
         by_layout: dict[str, list[dict[str, Any]]] = {}

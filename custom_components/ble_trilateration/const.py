@@ -60,6 +60,7 @@ CALIBRATION_QUALITY_ACCEPTED: Final = "accepted"
 CALIBRATION_QUALITY_POOR: Final = "poor_quality"
 CALIBRATION_QUALITY_REJECTED: Final = "rejected"
 DEFAULT_SAMPLE_RADIUS_M: Final = 1.0
+CALIBRATION_LAYOUT_REPAIR_GRACE_SECONDS: Final = 30.0
 
 UPDATE_INTERVAL = 1.05  # Seconds between bluetooth data processing cycles
 # Note: this is separate from the CONF_UPDATE_INTERVAL which allows the
