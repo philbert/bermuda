@@ -6,7 +6,7 @@ import custom_components.ble_trilateration.const
 
 # from custom_components.ble_trilateration.const import CONF_DEVICES
 MOCK_OPTIONS = {
-    custom_components.ble_trilateration.const.CONF_MAX_VELOCITY: 3.0,
+    custom_components.ble_trilateration.const.CONF_MAX_VELOCITY: 1.8,
     custom_components.ble_trilateration.const.CONF_DEVTRACK_TIMEOUT: 30,
     custom_components.ble_trilateration.const.CONF_UPDATE_INTERVAL: 10.0,
     custom_components.ble_trilateration.const.CONF_SMOOTHING_SAMPLES: 20,
@@ -14,7 +14,7 @@ MOCK_OPTIONS = {
 }
 
 MOCK_OPTIONS_GLOBALS = {
-    custom_components.ble_trilateration.const.CONF_MAX_VELOCITY: 3.0,
+    custom_components.ble_trilateration.const.CONF_MAX_VELOCITY: 1.8,
     custom_components.ble_trilateration.const.CONF_DEVTRACK_TIMEOUT: 30,
     custom_components.ble_trilateration.const.CONF_UPDATE_INTERVAL: 10.0,
     custom_components.ble_trilateration.const.CONF_SMOOTHING_SAMPLES: 20,

@@ -32,7 +32,7 @@
         "title": "Definições globais",
         "data": {
           "max_area_radius": "Raio máximo em metros para deteção simples de ÁREA",
-          "max_velocity": "Velocidade máxima em metros por segundo - ignorar leituras que indiquem movimento mais rápido que este limite (3m/s ou 10km/h é uma boa configuração).",
+          "max_velocity": "Velocidade máxima em metros por segundo - ignorar leituras que indiquem movimento mais rápido que este limite (1,8m/s ou 6,5km/h é uma boa configuração padrão).",
           "devtracker_nothome_timeout": "Timeout do Devtracker em segundos para considerar um dispositivo como `Fora de Casa`.",
           "update_interval": "Intervalo de atualização - frequência (em segundos) das atualizações dos sensores.",
           "smoothing_samples": "Amostras de suavização - número de amostras usadas para suavizar as leituras de distância.",
@@ -42,7 +42,7 @@
         },
         "data_description": {
           "max_area_radius": "Na funcionalidade simples `ÁREA`, um dispositivo será marcado como estando na ÁREA do recetor mais próximo, se estiver dentro deste raio. Se definir um valor pequeno, os dispositivos podem ficar como `desconhecido` entre recetores; valores grandes sempre os mostrarão na ÁREA mais próxima.",
-          "max_velocity": "Se uma leitura indicar que um dispositivo se move mais rápido do que este limite, essa leitura será ignorada. Humanos normalmente caminham a 1.4m/s; com objetos rápidos, movem-se até 3m/s.",
+          "max_velocity": "Se uma leitura indicar que um dispositivo se move mais rápido do que este limite, essa leitura será ignorada. Humanos normalmente caminham a cerca de 1,4m/s; 1,8m/s já é um passo rápido em ambiente interno.",
           "devtracker_nothome_timeout": "Tempo necessário para marcar entidades como `fora de casa` após cessarem anúncios Bluetooth. 30 a 300 segundos é recomendado.",
           "update_interval": "Distâncias que encurtam ainda serão atualizadas imediatamente, mas distâncias que aumentam serão limitadas por este intervalo para reduzir o crescimento da base de dados.",
           "smoothing_samples": "Quantas amostras usar para suavizar leituras de distância. Valores maiores tornam os aumentos de distância mais lentos. Reduções de distância não são afetadas.",

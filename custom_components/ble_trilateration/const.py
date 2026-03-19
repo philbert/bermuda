@@ -250,10 +250,10 @@ DOCS[CONF_DEVICES] = "Identifies which bluetooth devices we wish to expose"
 CONF_SCANNERS = "configured_scanners"
 
 
-CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY = "max_velocity", 3
+CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY = "max_velocity", 1.8
 DOCS[CONF_MAX_VELOCITY] = (
     "In metres per second - ignore readings that imply movement away faster than",
-    "this limit. 3m/s (10km/h) is good.",  # fmt: skip
+    "this limit. 1.8m/s (6.5km/h) is a good default.",  # fmt: skip
 )
 
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30

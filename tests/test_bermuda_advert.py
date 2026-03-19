@@ -70,7 +70,7 @@ def mock_advertisement_data():
 def bermuda_advert(mock_parent_device, mock_advertisement_data, mock_scanner_device):
     """Fixture for creating a BermudaAdvert instance."""
     options = {
-        CONF_MAX_VELOCITY: 3.0,
+        CONF_MAX_VELOCITY: 1.8,
         CONF_SMOOTHING_SAMPLES: 5,
     }
     ba = BermudaAdvert(
