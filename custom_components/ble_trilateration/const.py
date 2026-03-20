@@ -253,8 +253,8 @@ CONF_SCANNERS = "configured_scanners"
 
 CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY = "max_velocity", 1.8
 DOCS[CONF_MAX_VELOCITY] = (
-    "In metres per second - ignore readings that imply movement away faster than",
-    "this limit. 1.8m/s (6.5km/h) is a good default.",  # fmt: skip
+    "In metres per second - ignore readings and cap trilat horizontal motion that imply movement",
+    "faster than this limit. 1.8m/s (6.5km/h) is a good default.",  # fmt: skip
 )
 
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30

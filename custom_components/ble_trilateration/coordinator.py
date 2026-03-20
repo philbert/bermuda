@@ -1812,8 +1812,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     _TRILAT_FLOOR_SWITCH_PRIOR_WINDOW_S: float = 12.0
     _TRILAT_FLOOR_SWITCH_PRIOR_SIGMA_MULTIPLIER: float = 2.5
     _TRILAT_RANGE_DELTA_EPSILON_M: float = 0.2
-    _TRILAT_MAX_POSITION_SPEED_MPS: float = 5.0
-    _TRILAT_MAX_VERTICAL_SPEED_MPS: float = 1.5
+    # Horizontal motion uses the configured max_velocity limit so per-scanner
+    # ranging and trilat filtering share the same world-speed ceiling.
+    _TRILAT_MAX_VERTICAL_SPEED_MPS: float = 0.5
     _TRILAT_MAX_FILTER_DT_S: float = 5.0
     _CHALLENGER_REFERENCE_QUALITY_THRESHOLD: float = 0.30
     _CHALLENGER_UNCERTAINTY_BUDGET_M: float = 1.5
@@ -1825,6 +1826,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     _ZONE_TRAVERSAL_RECENCY_S: float = 30.0
     _TRILAT_BOOTSTRAP_MAX_AGE_S: float = 6 * 3600.0
     _TRILAT_BOOTSTRAP_HOLD_S: float = 60.0
+
+    def trilat_max_horizontal_speed_mps(self) -> float:
+        """Return the configured horizontal trilat speed limit."""
+        configured = self.options.get(CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY)
+        try:
+            limit = float(configured)
+        except (TypeError, ValueError):
+            limit = DEFAULT_MAX_VELOCITY
+        return max(0.1, limit)
+
+    def trilat_max_vertical_speed_mps(self) -> float:
+        """Return the vertical trilat speed limit."""
+        return self._TRILAT_MAX_VERTICAL_SPEED_MPS
 
     @staticmethod
     def _score_rssi(rssi_filtered: float | None) -> float:
@@ -1974,8 +1988,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             horizontal_ref = 0.35
             vertical_ref = 0.15
         else:
-            horizontal_ref = 1.50
-            vertical_ref = 0.60
+            horizontal_ref = self.trilat_max_horizontal_speed_mps()
+            vertical_ref = self.trilat_max_vertical_speed_mps()
 
         horizontal_stability = max(0.0, 1.0 - min(1.0, horizontal_speed / horizontal_ref))
         vertical_stability = max(0.0, 1.0 - min(1.0, vertical_speed / vertical_ref))
@@ -2192,7 +2206,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         dx = measurement_xy[0] - pred_x
         dy = measurement_xy[1] - pred_y
         distance_to_prediction = math.hypot(dx, dy)
-        max_xy_step = self._TRILAT_MAX_POSITION_SPEED_MPS * dt
+        horizontal_speed_limit = self.trilat_max_horizontal_speed_mps()
+        vertical_speed_limit = self.trilat_max_vertical_speed_mps()
+        max_xy_step = horizontal_speed_limit * dt
         if distance_to_prediction > max_xy_step and distance_to_prediction > 0.0:
             scale = max_xy_step / distance_to_prediction
             dx *= scale
@@ -2204,8 +2220,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         velocity_x = state.velocity_x_mps + ((beta_xy * innovation_x) / dt)
         velocity_y = state.velocity_y_mps + ((beta_xy * innovation_y) / dt)
         xy_speed = math.hypot(velocity_x, velocity_y)
-        if xy_speed > self._TRILAT_MAX_POSITION_SPEED_MPS and xy_speed > 0.0:
-            scale = self._TRILAT_MAX_POSITION_SPEED_MPS / xy_speed
+        if xy_speed > horizontal_speed_limit and xy_speed > 0.0:
+            scale = horizontal_speed_limit / xy_speed
             velocity_x *= scale
             velocity_y *= scale
 
@@ -2219,14 +2235,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             else:
                 pred_z = state.last_solution_z + (state.velocity_z_mps * dt)
                 dz = measurement_z - pred_z
-                max_z_step = self._TRILAT_MAX_VERTICAL_SPEED_MPS * dt
+                max_z_step = vertical_speed_limit * dt
                 if abs(dz) > max_z_step:
                     dz = math.copysign(max_z_step, dz)
                 filtered_z = pred_z + (alpha_z * dz)
                 velocity_z = state.velocity_z_mps + ((beta_z * dz) / dt)
                 velocity_z = max(
-                    -self._TRILAT_MAX_VERTICAL_SPEED_MPS,
-                    min(self._TRILAT_MAX_VERTICAL_SPEED_MPS, velocity_z),
+                    -vertical_speed_limit,
+                    min(vertical_speed_limit, velocity_z),
                 )
         elif filtered_z is not None and anchor_z_bounds is not None:
             filtered_z = self._apply_soft_vertical_prior(filtered_z, anchor_z_bounds)
@@ -3287,7 +3303,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Update motion budget while challenger is active
                         if state.floor_challenger_id is not None and state.challenger_onset_time > 0.0:
                             elapsed_s = max(0.0, nowstamp - state.challenger_onset_time)
-                            budget_from_elapsed = elapsed_s * self._TRILAT_MAX_POSITION_SPEED_MPS
+                            budget_from_elapsed = elapsed_s * self.trilat_max_horizontal_speed_mps()
                             state.challenger_motion_budget_m = min(
                                 budget_from_elapsed + self._CHALLENGER_UNCERTAINTY_BUDGET_M,
                                 self._CHALLENGER_MAX_MOTION_BUDGET_M,

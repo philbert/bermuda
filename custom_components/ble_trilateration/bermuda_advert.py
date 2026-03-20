@@ -26,6 +26,7 @@ from .const import (
     _LOGGER_TARGET_SPAM_LESS,
     CONF_MAX_VELOCITY,
     CONF_SMOOTHING_SAMPLES,
+    DEFAULT_MAX_VELOCITY,
     debug_device_match,
     DISTANCE_INFINITE,
     DISTANCE_TIMEOUT,
@@ -106,7 +107,6 @@ class BermudaAdvert(dict):
         self.hist_distance_by_interval: list[float | None] = []  # updated per-interval
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
-        self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
         self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
         self.local_name: list[tuple[str, bytes]] = []
         self.manufacturer_data: list[dict[int, bytes]] = []
@@ -645,7 +645,8 @@ class BermudaAdvert(dict):
 
             self.hist_velocity.insert(0, velocity)
 
-            if velocity > self.conf_max_velocity:
+            max_velocity = float(self.options.get(CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY) or DEFAULT_MAX_VELOCITY)
+            if velocity > max_velocity:
                 if self._device.create_sensor:
                     _LOGGER.debug(
                         "This sparrow %s flies too fast (%2fm/s), ignoring",

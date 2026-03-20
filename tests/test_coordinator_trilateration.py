@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from custom_components.ble_trilateration.const import (
+    CONF_MAX_VELOCITY,
     DISTANCE_TIMEOUT,
 )
 from custom_components.ble_trilateration.coordinator import BermudaDataUpdateCoordinator
@@ -144,7 +145,7 @@ def _make_advert(scanner, stamp, rssi, distance_raw):
 
 def _make_coordinator():
     coordinator = object.__new__(BermudaDataUpdateCoordinator)
-    coordinator.options = {}
+    coordinator.options = {CONF_MAX_VELOCITY: 1.8}
     coordinator.devices = {}
     coordinator._scanners = set()
     coordinator._trilat_decision_state = {}
@@ -1542,11 +1543,11 @@ def test_trilat_motion_filter_caps_unphysical_xy_jump():
     published_speed = ((dx * dx) + (dy * dy)) ** 0.5 / 1.0
 
     assert device.trilat_status == "ok"
-    assert published_speed <= coordinator._TRILAT_MAX_POSITION_SPEED_MPS
+    assert published_speed <= coordinator.trilat_max_horizontal_speed_mps()
     assert device.trilat_x_m is not None and device.trilat_x_m < far_x
     assert device.trilat_y_m is not None and device.trilat_y_m < far_y
     assert device.trilat_horizontal_speed_mps is not None
-    assert device.trilat_horizontal_speed_mps <= coordinator._TRILAT_MAX_POSITION_SPEED_MPS
+    assert device.trilat_horizontal_speed_mps <= coordinator.trilat_max_horizontal_speed_mps()
 
 
 def test_trilat_motion_filter_caps_unphysical_xy_jump_after_long_gap():
@@ -1591,10 +1592,36 @@ def test_trilat_motion_filter_caps_unphysical_xy_jump_after_long_gap():
     published_speed = ((dx * dx) + (dy * dy)) ** 0.5 / coordinator._TRILAT_MAX_FILTER_DT_S
 
     assert device.trilat_status == "ok"
-    assert published_speed <= coordinator._TRILAT_MAX_POSITION_SPEED_MPS
+    assert published_speed <= coordinator.trilat_max_horizontal_speed_mps()
     assert device.trilat_horizontal_speed_mps is not None
-    assert device.trilat_horizontal_speed_mps <= coordinator._TRILAT_MAX_POSITION_SPEED_MPS
+    assert device.trilat_horizontal_speed_mps <= coordinator.trilat_max_horizontal_speed_mps()
     assert device.trilat_x_m is not None and device.trilat_x_m > far_x
+
+
+def test_trilat_motion_filter_caps_vertical_speed():
+    """Vertical motion must be much more constrained than horizontal motion."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-motion-z")
+    state = coordinator._get_trilat_decision_state(device)
+    state.last_solution_xy = (0.0, 0.0)
+    state.last_solution_z = 2.0
+    state.last_filter_stamp = 100.0
+    state.last_status = "ok"
+
+    filtered_xy, filtered_z = coordinator._apply_trilat_motion_filter(
+        state,
+        nowstamp=101.0,
+        mobility_type=device.get_mobility_type(),
+        measurement_xy=(0.0, 0.0),
+        measurement_z=4.0,
+        anchor_z_bounds=(0.0, 4.0),
+        residual_m=0.1,
+        mean_sigma_m=0.1,
+    )
+
+    assert filtered_xy == (0.0, 0.0)
+    assert filtered_z is not None and filtered_z < 2.5
+    assert state.velocity_z_mps <= coordinator.trilat_max_vertical_speed_mps()
 
 
 def test_trilat_holds_previous_z_through_same_floor_2d_gap():
