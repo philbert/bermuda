@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.ble_trilateration.room_classifier import BermudaRoomClassifier
+from custom_components.ble_trilateration.room_classifier import BermudaRoomClassifier, _FingerprintFeature
 
 
 class _FakeCalibration:
@@ -376,6 +376,39 @@ async def test_missing_weak_scanner_does_not_overwhelm_strong_fingerprint_match(
     assert room_scores["living_room"] > room_scores["bedroom"]
 
 
+@pytest.mark.asyncio
+async def test_fingerprint_coverage_requires_enough_overlap_to_score() -> None:
+    """Coverage should only count samples that have enough overlap to produce a score."""
+    classifier = BermudaRoomClassifier(
+        _FakeCalibration(
+            [
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "living_room",
+                    "position": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                    "anchors": {
+                        "scanner_a": {"rssi_median": -50.0},
+                        "scanner_b": {"rssi_median": -70.0},
+                    },
+                }
+            ]
+        ),
+        _FakeAreaRegistry(),
+    )
+
+    await classifier.async_rebuild()
+
+    room_scores, _, coverage = classifier._fingerprint_room_scores(
+        classifier._fingerprints["layout-a"],
+        {"scanner_a": -50.0, "scanner_c": -60.0},
+    )
+
+    assert room_scores == {}
+    assert coverage["living_room"] == pytest.approx(0.0)
+
+
 def test_adaptive_fingerprint_weight_only_rises_with_good_coverage_and_confidence() -> None:
     """Weak fingerprint support should cap the adaptive blend at the normal weight."""
     classifier = BermudaRoomClassifier(_FakeCalibration([]), _FakeAreaRegistry())
@@ -399,6 +432,59 @@ def test_adaptive_fingerprint_weight_only_rises_with_good_coverage_and_confidenc
     assert low_geometry_high_fp > 0.65
     assert low_geometry_low_coverage == pytest.approx(0.65)
     assert low_geometry_low_confidence == pytest.approx(0.65)
+
+
+@pytest.mark.asyncio
+async def test_low_coverage_keeps_classify_blend_weight_at_normal_level(monkeypatch) -> None:
+    """Poor candidate coverage should suppress the elevated fingerprint blend in classify()."""
+    classifier = BermudaRoomClassifier(
+        _FakeCalibration(
+            [
+                {
+                    "anchor_layout_hash": "layout-a",
+                    "room_area_id": "living_room",
+                    "position": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.0},
+                    "sample_radius_m": 1.0,
+                    "quality": {"status": "accepted"},
+                    "anchors": {
+                        "scanner_a": {"rssi_median": -52.0},
+                        "scanner_b": {"rssi_median": -77.0},
+                    },
+                }
+            ]
+        ),
+        _FakeAreaRegistry(),
+    )
+
+    await classifier.async_rebuild()
+
+    monkeypatch.setattr(
+        classifier,
+        "_geometry_room_scores",
+        lambda *_args, **_kwargs: ({"living_room": 0.25}, {"living_room": 1}),
+    )
+    monkeypatch.setattr(
+        classifier,
+        "_fingerprint_room_scores",
+        lambda *_args, **_kwargs: (
+            {"living_room": 0.90},
+            {"living_room": 1},
+            {"living_room": 0.25},
+        ),
+    )
+
+    result = classifier.classify(
+        layout_hash="layout-a",
+        floor_id="ground",
+        x_m=0.0,
+        y_m=0.0,
+        z_m=0.0,
+        live_rssi_by_scanner={"scanner_a": -53.0, "scanner_b": -75.0},
+        geometry_quality_01=0.10,
+    )
+
+    assert result.area_id == "living_room"
+    assert result.fingerprint_blend_weight == pytest.approx(0.65)
 
 
 @pytest.mark.asyncio
@@ -525,6 +611,30 @@ async def test_covariance_geometry_scoring_downweights_separation_along_weak_axi
     assert isotropic.reason == "room_ambiguity"
     assert covariance_aware.area_id == "bedroom"
     assert covariance_aware.reason == "ok"
+
+
+def test_missing_feature_penalty_depends_on_floor_or_mad_not_span() -> None:
+    """Missing-feature penalty should be max(6 dB, MAD) and ignore RSSI span."""
+    classifier = BermudaRoomClassifier(_FakeCalibration([]), _FakeAreaRegistry())
+    narrow = classifier._fingerprint_missing_penalty_db(
+        _FingerprintFeature(
+            rssi_median=-80.0,
+            rssi_mad=2.0,
+            packet_count=3,
+            rssi_span=4.0,
+        )
+    )
+    wide = classifier._fingerprint_missing_penalty_db(
+        _FingerprintFeature(
+            rssi_median=-80.0,
+            rssi_mad=2.0,
+            packet_count=3,
+            rssi_span=40.0,
+        )
+    )
+
+    assert narrow == pytest.approx(6.0)
+    assert wide == pytest.approx(6.0)
 
 
 @pytest.mark.asyncio

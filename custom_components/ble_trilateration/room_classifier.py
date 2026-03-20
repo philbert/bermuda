@@ -31,7 +31,6 @@ FINGERPRINT_K_CAP = 5
 FINGERPRINT_SIGMA_DB = 7.0
 FINGERPRINT_SIGMA_DB_MIN = 4.0
 FINGERPRINT_SIGMA_DB_MAX = 12.0
-FINGERPRINT_MISSING_PENALTY_DB = 9.0
 FINGERPRINT_MISSING_FEATURE_FLOOR_DB = 6.0
 FINGERPRINT_EXTRA_SCANNER_PENALTY_DB = 4.5
 FINGERPRINT_MIN_COMMON_SCANNERS = 2
@@ -58,6 +57,7 @@ class RoomClassification:
     fingerprint_confidence: float = 0.0
     fingerprint_coverage: float = 0.0
     fingerprint_blend_weight: float = FINGERPRINT_WEIGHT_NORMAL
+    fingerprint_rankings: tuple[tuple[str, float, float, int], ...] = ()
     sample_count: int = 0
 
 
@@ -314,6 +314,15 @@ class BermudaRoomClassifier:
             if len(ranked_fingerprints) == 1 and fingerprint_best_score > 0.0
             else max(0.0, fingerprint_best_score - fingerprint_second_score)
         )
+        fingerprint_rankings = tuple(
+            (
+                area_id,
+                score,
+                fingerprint_coverage.get(area_id, 0.0),
+                self.room_sample_count(layout_hash, floor_id, area_id),
+            )
+            for area_id, score in ranked_fingerprints
+        )
 
         room_blend_weights: dict[str, float] = {}
         if geometry_scores:
@@ -368,6 +377,7 @@ class BermudaRoomClassifier:
                 fingerprint_confidence=fingerprint_confidence,
                 fingerprint_coverage=candidate_fingerprint_coverage,
                 fingerprint_blend_weight=candidate_fingerprint_blend_weight,
+                fingerprint_rankings=fingerprint_rankings,
                 sample_count=sample_count,
             )
         if len(ranked_rooms) > 1 and (best_score / max(second_score, 1e-9)) < ROOM_SCORE_RATIO_MIN:
@@ -386,6 +396,7 @@ class BermudaRoomClassifier:
                 fingerprint_confidence=fingerprint_confidence,
                 fingerprint_coverage=candidate_fingerprint_coverage,
                 fingerprint_blend_weight=candidate_fingerprint_blend_weight,
+                fingerprint_rankings=fingerprint_rankings,
                 sample_count=sample_count,
             )
         return RoomClassification(
@@ -403,6 +414,7 @@ class BermudaRoomClassifier:
             fingerprint_confidence=fingerprint_confidence,
             fingerprint_coverage=candidate_fingerprint_coverage,
             fingerprint_blend_weight=candidate_fingerprint_blend_weight,
+            fingerprint_rankings=fingerprint_rankings,
             sample_count=sample_count,
         )
 
@@ -542,10 +554,10 @@ class BermudaRoomClassifier:
             total_samples_by_area[sample.area_id] += 1
             sample_scanners = set(sample.features_by_scanner)
             common_scanners = sorted(sample_scanners & set(live))
-            if common_scanners:
-                covered_samples_by_area[sample.area_id] += 1
-            if len(common_scanners) < min(FINGERPRINT_MIN_COMMON_SCANNERS, len(live)):
+            required_common = min(FINGERPRINT_MIN_COMMON_SCANNERS, len(live))
+            if len(common_scanners) < required_common:
                 continue
+            covered_samples_by_area[sample.area_id] += 1
 
             total_weighted_sq = 0.0
             total_weight = 0.0
@@ -561,20 +573,14 @@ class BermudaRoomClassifier:
                 feature = sample.features_by_scanner[scanner_address]
                 sigma_db = self._fingerprint_sigma_db(feature)
                 weight = self._fingerprint_reliability_weight(feature)
-                penalty_db = min(
-                    FINGERPRINT_MISSING_PENALTY_DB,
-                    max(
-                        FINGERPRINT_MISSING_FEATURE_FLOOR_DB,
-                        feature.rssi_mad,
-                        feature.rssi_span / 4.0,
-                    ),
-                )
+                penalty_db = self._fingerprint_missing_penalty_db(feature)
                 total_weighted_sq += weight * ((penalty_db / sigma_db) ** 2)
                 total_weight += weight
 
             extra_live_scanners = len(set(live) - sample_scanners)
             if extra_live_scanners:
-                extra_penalty = (FINGERPRINT_EXTRA_SCANNER_PENALTY_DB / FINGERPRINT_SIGMA_DB) ** 2
+                sample_sigma_db = self._fingerprint_sample_sigma_db(sample)
+                extra_penalty = (FINGERPRINT_EXTRA_SCANNER_PENALTY_DB / sample_sigma_db) ** 2
                 total_weighted_sq += extra_live_scanners * extra_penalty
                 total_weight += float(extra_live_scanners)
 
@@ -602,6 +608,17 @@ class BermudaRoomClassifier:
             FINGERPRINT_SIGMA_DB_MIN,
             min(FINGERPRINT_SIGMA_DB_MAX, (FINGERPRINT_SIGMA_DB * 0.5) + spread_db),
         )
+
+    def _fingerprint_missing_penalty_db(self, feature: _FingerprintFeature) -> float:
+        """Return bounded penalty for a calibration-visible scanner missing from the live set."""
+        return max(FINGERPRINT_MISSING_FEATURE_FLOOR_DB, feature.rssi_mad)
+
+    def _fingerprint_sample_sigma_db(self, sample: _SampleFingerprint) -> float:
+        """Return a representative sigma for unmatched live scanners against one sample."""
+        if not sample.features_by_scanner:
+            return FINGERPRINT_SIGMA_DB
+        sigmas = [self._fingerprint_sigma_db(feature) for feature in sample.features_by_scanner.values()]
+        return sum(sigmas) / len(sigmas)
 
     def _fingerprint_reliability_weight(self, feature: _FingerprintFeature) -> float:
         """Return scanner reliability weight from calibration stability and visibility."""

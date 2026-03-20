@@ -1625,6 +1625,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             f"fp_cov={classification.fingerprint_coverage:.2f} "
             f"fp_blend={classification.fingerprint_blend_weight:.2f} "
             f"samples={classification.sample_count} "
+            f"fp_rooms={self._room_fingerprint_diag_summary(classification)} "
             f"geom_q={geometry_quality_01:.2f} "
             f"aniso={anisotropy_ratio:.2f} "
             f"cov={'yes' if solve_covariance_xy is not None else 'no'} "
@@ -1869,8 +1870,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return hold reason when same-floor room evidence is not strong enough to form a challenger."""
         if geometry_quality_01 >= self._ROOM_SWITCH_GEOMETRY_QUALITY_MIN:
             return None
-        if classification.geometry_score >= self._ROOM_SWITCH_GEOMETRY_SCORE_MIN:
-            return None
         if classification.fingerprint_coverage < self._ROOM_SWITCH_FP_COVERAGE_FLOOR:
             return "weak_fp_coverage"
         challenger_leads_by_fingerprint = classification.best_area_id == classification.fingerprint_best_area_id
@@ -1880,6 +1879,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         ):
             return "weak_geometry_guardrail"
         return None
+
+    @staticmethod
+    def _room_fingerprint_diag_summary(classification) -> str:
+        """Return compact per-room fingerprint diagnostics for the current ranking."""
+        rankings = getattr(classification, "fingerprint_rankings", ())
+        if not rankings:
+            return "none"
+        return ",".join(
+            f"{area_id}:{score:.2f}/{coverage:.2f}/{sample_count}"
+            for area_id, score, coverage, sample_count in rankings[:3]
+        )
 
     def _room_switch_min_sample_margin(self, sample_count: int) -> float:
         """Return extra blended-score margin for sparse challenger rooms."""
@@ -2043,7 +2053,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
     _TRILAT_BOOTSTRAP_MAX_AGE_S: float = 6 * 3600.0
     _TRILAT_BOOTSTRAP_HOLD_S: float = 60.0
     _ROOM_SWITCH_GEOMETRY_QUALITY_MIN: float = 0.30
-    _ROOM_SWITCH_GEOMETRY_SCORE_MIN: float = 0.20
     _ROOM_SWITCH_FP_CONFIDENCE_DECISIVE: float = 0.05
     _ROOM_SWITCH_FP_COVERAGE_FLOOR: float = 0.50
     _ROOM_SWITCH_MIN_SAMPLE_MARGIN_ONE: float = 0.10

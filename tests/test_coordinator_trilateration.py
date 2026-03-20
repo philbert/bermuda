@@ -1221,6 +1221,13 @@ def test_area_switch_requires_room_dwell_before_switching():
             topk_used=3,
             geometry_score=0.41,
             fingerprint_score=0.73,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.73,
+            fingerprint_second_score=0.40,
+            fingerprint_confidence=0.33,
+            fingerprint_coverage=1.0,
+            fingerprint_rankings=(("living_room", 0.73, 1.0, 3), ("kitchen", 0.40, 0.75, 2)),
+            sample_count=3,
         ),
     )
 
@@ -1260,6 +1267,12 @@ def test_area_switch_requires_extra_dwell_for_weak_transition():
             topk_used=3,
             geometry_score=0.41,
             fingerprint_score=0.73,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.73,
+            fingerprint_second_score=0.40,
+            fingerprint_confidence=0.33,
+            fingerprint_coverage=1.0,
+            sample_count=3,
         ),
         transition_strength=lambda **_kwargs: 0.2,
     )
@@ -1323,6 +1336,51 @@ def test_area_switch_holds_when_geometry_is_weak_and_fingerprint_is_not_decisive
     assert "hold=weak_geometry_guardrail" in device.diag_area_switch
 
 
+def test_area_switch_allows_decisive_fingerprint_challenger_when_geometry_is_weak():
+    """Weak geometry should still allow a challenger to accumulate dwell when fingerprint is decisive."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-guard-pass")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.trilat_geometry_quality = 2.0
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.70,
+            second_score=0.10,
+            topk_used=2,
+            geometry_score=0.08,
+            fingerprint_score=0.72,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.72,
+            fingerprint_second_score=0.45,
+            fingerprint_confidence=0.27,
+            fingerprint_coverage=1.0,
+            sample_count=3,
+        ),
+        room_reference_point=lambda *_args, **_kwargs: (0.0, 0.0, 0.0),
+    )
+
+    with patch("custom_components.ble_trilateration.coordinator.monotonic_time_coarse", return_value=100.0):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+
+    state = coordinator._get_trilat_decision_state(device)
+    assert device.area_id == "kitchen"
+    assert state.room_challenger_id == "living_room"
+    assert "hold=weak_geometry_guardrail" not in device.diag_area_switch
+    assert "hold=room_switch_dwell" in device.diag_area_switch
+
+
 def test_area_switch_requires_extra_dwell_for_sparse_room_challenger():
     """Sparse challenger rooms should need longer dwell before switching."""
     coordinator = _make_coordinator()
@@ -1370,6 +1428,50 @@ def test_area_switch_requires_extra_dwell_for_sparse_room_challenger():
         assert device.area_id == "living_room"
 
 
+def test_area_switch_resets_sparse_challenger_when_margin_is_too_small():
+    """Sparse challenger rooms should be held before dwell accumulation if the score margin is too small."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-sparse-margin")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.trilat_geometry_quality = 5.0
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.62,
+            second_score=0.55,
+            topk_used=3,
+            geometry_score=0.41,
+            fingerprint_score=0.73,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.73,
+            fingerprint_second_score=0.48,
+            fingerprint_confidence=0.25,
+            fingerprint_coverage=1.0,
+            sample_count=1,
+        ),
+        room_reference_point=lambda *_args, **_kwargs: (0.0, 0.0, 0.0),
+    )
+
+    with patch("custom_components.ble_trilateration.coordinator.monotonic_time_coarse", return_value=100.0):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+
+    state = coordinator._get_trilat_decision_state(device)
+    assert device.area_id == "kitchen"
+    assert state.room_challenger_id is None
+    assert "hold=min_sample_margin(0.10)" in device.diag_area_switch
+
+
 def test_room_live_covariance_xy_reflects_weak_axis_geometry():
     """Covariance helper should report larger variance on the weakly observed axis."""
     coordinator = _make_coordinator()
@@ -1390,6 +1492,66 @@ def test_room_live_covariance_xy_reflects_weak_axis_geometry():
     cov_xx, cov_xy, cov_yy = covariance
     assert cov_xx > cov_yy
     assert abs(cov_xy) < 1e-3
+
+
+def test_area_switch_weak_axis_alignment_increases_dwell_end_to_end():
+    """Weak-axis aligned room switches should get the extra dwell multiplier in the live path."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-weak-axis")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 0.0
+    device.trilat_y_m = 0.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.trilat_geometry_quality = 5.0
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+
+    sc_north = _make_scanner(coordinator, "scanner-north", "f1", 0.0, 5.0)
+    sc_south = _make_scanner(coordinator, "scanner-south", "f1", 0.0, -5.0)
+    nowstamp = time.monotonic()
+    device.adverts = {
+        ("dev-room-weak-axis", sc_north.address): _make_advert(sc_north, nowstamp, -70.0, 5.0),
+        ("dev-room-weak-axis", sc_south.address): _make_advert(sc_south, nowstamp, -70.0, 5.0),
+    }
+
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.62,
+            second_score=0.12,
+            topk_used=3,
+            geometry_score=0.41,
+            fingerprint_score=0.73,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.73,
+            fingerprint_second_score=0.48,
+            fingerprint_confidence=0.25,
+            fingerprint_coverage=1.0,
+            sample_count=3,
+        ),
+        room_reference_point=lambda _layout_hash, _floor_id, area_id: {
+            "kitchen": (0.0, 0.0, 0.0),
+            "living_room": (2.0, 0.0, 0.0),
+        }.get(area_id),
+    )
+
+    with patch("custom_components.ble_trilateration.coordinator.monotonic_time_coarse", side_effect=[100.0, 102.0, 102.3]):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+        assert "weak_axis_aligned=yes" in device.diag_area_switch
+        assert "hold=room_switch_dwell(2.2s)" in device.diag_area_switch
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "kitchen"
+
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        assert device.area_id == "living_room"
 
 
 def test_area_switch_emits_target_room_diag_logging():
@@ -1418,6 +1580,13 @@ def test_area_switch_emits_target_room_diag_logging():
             topk_used=3,
             geometry_score=0.41,
             fingerprint_score=0.73,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.73,
+            fingerprint_second_score=0.40,
+            fingerprint_confidence=0.33,
+            fingerprint_coverage=1.0,
+            fingerprint_rankings=(("living_room", 0.73, 1.0, 3), ("kitchen", 0.40, 0.75, 2)),
+            sample_count=3,
         ),
     )
 
@@ -1441,6 +1610,7 @@ def test_area_switch_emits_target_room_diag_logging():
     assert "hold=room_switch_dwell" in args[8]
     assert "geom=0.41" in args[8]
     assert "fp=0.73" in args[8]
+    assert "fp_rooms=living_room:0.73/1.00/3,kitchen:0.40/0.75/2" in args[8]
 
 
 def test_trilat_floor_switch_preserves_state_and_ewma():
