@@ -828,6 +828,9 @@ async def test_calibration_layout_mismatch_can_update_samples(hass: HomeAssistan
     mismatch = coordinator.calibration.get_layout_mismatch_summary()
     assert mismatch is not None
     assert mismatch["sample_count"] == 1
+    assert mismatch["total_sample_count"] == 1
+    assert mismatch["current_layout_count"] == 0
+    assert mismatch["mismatched_sample_count"] == 1
     assert mismatch["current_layout_hash"] == current_layout_hash
 
     updated = await coordinator.calibration.async_update_samples_to_current_geometry()
@@ -931,6 +934,105 @@ async def test_calibration_layout_mismatch_raises_repair(
     assert issue.is_fixable is True
     assert "Calibration anchor mismatch detected" in caplog.text
     assert "Garage Proxy: moved 0.50 m" in caplog.text
+    assert issue.translation_placeholders == {
+        "sample_count": "1",
+        "total_sample_count": "1",
+        "current_layout_count": "0",
+        "mismatched_sample_count": "1",
+        "mismatched_layout_count": "1",
+        "current_layout_hash": coordinator.calibration.current_anchor_layout_hash[:8],
+        "dominant_layout_hash": "old_layo",
+        "dominant_layout_count": "1",
+        "changed_anchor_lines": "- Garage Proxy: moved 0.50 m",
+    }
+
+
+async def test_calibration_layout_mismatch_raises_repair_for_mixed_current_and_stale_samples(
+    hass: HomeAssistant, setup_bermuda_entry
+):
+    """Keep the repair visible when some samples match and some samples are stale."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+    coordinator._cancel_calibration_layout_mismatch_grace()
+    coordinator._calibration_layout_mismatch_grace_active = False
+    coordinator._calibration_layout_mismatch_grace_deadline = None
+
+    scanner = BermudaDevice("aa:bb:cc:dd:10:4a", coordinator)
+    scanner.name = "Bosgame Proxy"
+    scanner.anchor_x_m = 3.0
+    scanner.anchor_y_m = 7.0
+    scanner.anchor_z_m = 1.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+
+    current_layout_hash = coordinator.calibration.current_anchor_layout_hash
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_layout_current",
+            "created_at": "2026-03-06T12:00:00+00:00",
+            "device_id": "device_one",
+            "device_name": "Device One",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "living_room",
+            "room_name": "Living Room",
+            "position": {"x_m": 1.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": current_layout_hash,
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 3.0, "y_m": 7.0, "z_m": 1.0},
+                    "rssi_median": -70.0,
+                }
+            },
+            "quality": {"status": "accepted", "eligible_anchor_count": 1, "reason": None},
+        }
+    )
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_layout_stale",
+            "created_at": "2026-03-06T12:05:00+00:00",
+            "device_id": "device_one",
+            "device_name": "Device One",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "living_room",
+            "room_name": "Living Room",
+            "position": {"x_m": 2.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": "old_layout_hash",
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 3.5, "y_m": 7.0, "z_m": 1.0},
+                    "rssi_median": -71.0,
+                }
+            },
+            "quality": {"status": "accepted", "eligible_anchor_count": 1, "reason": None},
+        }
+    )
+
+    mismatch = coordinator.calibration.get_layout_mismatch_summary()
+    assert mismatch is not None
+    assert mismatch["sample_count"] == 1
+    assert mismatch["total_sample_count"] == 2
+    assert mismatch["current_layout_count"] == 1
+    assert mismatch["mismatched_sample_count"] == 1
+    assert mismatch["mismatched_layout_count"] == 1
+
+    await coordinator.async_handle_calibration_samples_changed()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is not None
+    assert issue.translation_placeholders == {
+        "sample_count": "1",
+        "total_sample_count": "2",
+        "current_layout_count": "1",
+        "mismatched_sample_count": "1",
+        "mismatched_layout_count": "1",
+        "current_layout_hash": current_layout_hash[:8],
+        "dominant_layout_hash": "old_layo",
+        "dominant_layout_count": "1",
+        "changed_anchor_lines": "- Bosgame Proxy: moved 0.50 m",
+    }
 
 
 async def test_calibration_layout_mismatch_not_raised_without_current_anchor_geometry(

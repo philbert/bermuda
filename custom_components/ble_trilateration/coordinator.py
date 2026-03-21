@@ -442,10 +442,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self._calibration_layout_mismatch_last_context = "calibration_samples_changed"
         state = self._calibration_layout_debug_state()
         _LOGGER.debug(
-            "Calibration runtime rebuilt: samples=%d current_layout_samples=%d anchors=%d current_hash=%s "
-            "current_model=%s acknowledged_current=%s context=%s",
-            state["sample_count"],
+            "Calibration runtime rebuilt: total_samples=%d current_layout_samples=%d stale_samples=%d "
+            "anchors=%d current_hash=%s current_model=%s acknowledged_current=%s context=%s",
+            state["total_sample_count"],
             state["current_layout_count"],
+            state["stale_sample_count"],
             state["current_anchor_count"],
             state["current_layout_hash"],
             state["current_layout_has_ranging_model"],
@@ -530,9 +531,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return a compact snapshot of calibration-layout state for debug logs."""
         summary = self.calibration.get_summary()
         current_layout_hash = str(summary.get("current_layout_hash") or "")
+        total_sample_count = int(summary.get("sample_count") or 0)
+        current_layout_count = int(summary.get("current_layout_count") or 0)
         return {
-            "sample_count": int(summary.get("sample_count") or 0),
-            "current_layout_count": int(summary.get("current_layout_count") or 0),
+            "total_sample_count": total_sample_count,
+            "current_layout_count": current_layout_count,
+            "stale_sample_count": max(0, total_sample_count - current_layout_count),
             "current_anchor_count": len(self.calibration.current_anchor_geometry()),
             "current_layout_hash": current_layout_hash[:8],
             "acknowledged_current_layout": current_layout_hash in self.calibration.acknowledged_layout_hashes,
@@ -2818,11 +2822,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     remaining = max(0.0, deadline - monotonic_time_coarse())
                     _LOGGER.info(
                         "Clearing calibration layout mismatch repair during startup grace: context=%s "
-                        "remaining=%.1fs samples=%d current_layout_samples=%d anchors=%d current_hash=%s current_model=%s",
+                        "remaining=%.1fs total_samples=%d current_layout_samples=%d stale_samples=%d "
+                        "anchors=%d current_hash=%s current_model=%s",
                         self._calibration_layout_mismatch_last_context,
                         remaining,
-                        state["sample_count"],
+                        state["total_sample_count"],
                         state["current_layout_count"],
+                        state["stale_sample_count"],
                         state["current_anchor_count"],
                         state["current_layout_hash"],
                         state["current_layout_has_ranging_model"],
@@ -2835,11 +2841,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         if mismatch is None:
             if self._calibration_layout_mismatch_signature is not None:
                 _LOGGER.info(
-                    "Cleared calibration layout mismatch repair: context=%s samples=%d current_layout_samples=%d "
-                    "anchors=%d current_hash=%s current_model=%s",
+                    "Cleared calibration layout mismatch repair: context=%s total_samples=%d "
+                    "current_layout_samples=%d stale_samples=%d anchors=%d current_hash=%s current_model=%s",
                     self._calibration_layout_mismatch_last_context,
-                    state["sample_count"],
+                    state["total_sample_count"],
                     state["current_layout_count"],
+                    state["stale_sample_count"],
                     state["current_anchor_count"],
                     state["current_layout_hash"],
                     state["current_layout_has_ranging_model"],
@@ -2855,7 +2862,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             [
                 mismatch["current_layout_hash"],
                 mismatch["dominant_layout_hash"],
+                str(mismatch["total_sample_count"]),
+                str(mismatch["current_layout_count"]),
                 str(mismatch["sample_count"]),
+                str(mismatch["mismatched_layout_count"]),
                 mismatch["changed_anchor_lines"],
             ]
         )
@@ -2863,13 +2873,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         _LOGGER.warning(
-            "Calibration anchor mismatch detected; %s saved sample(s) do not match the current anchor geometry. "
-            "context=%s samples=%d current_layout_samples=%d anchors=%d current_hash=%s current_model=%s "
-            "Anchor coordinate changes:\n%s",
+            "Calibration anchor mismatch detected; %s stale sample(s) out of %s total do not match the current "
+            "anchor geometry. context=%s total_samples=%d current_layout_samples=%d stale_samples=%d "
+            "stale_layouts=%d anchors=%d current_hash=%s current_model=%s Anchor coordinate changes:\n%s",
             mismatch["sample_count"],
+            mismatch["total_sample_count"],
             self._calibration_layout_mismatch_last_context,
-            state["sample_count"],
+            state["total_sample_count"],
             state["current_layout_count"],
+            state["stale_sample_count"],
+            mismatch["mismatched_layout_count"],
             state["current_anchor_count"],
             state["current_layout_hash"],
             state["current_layout_has_ranging_model"],
@@ -2887,6 +2900,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             translation_key=REPAIR_CALIBRATION_LAYOUT_MISMATCH,
             translation_placeholders={
                 "sample_count": str(mismatch["sample_count"]),
+                "total_sample_count": str(mismatch["total_sample_count"]),
+                "current_layout_count": str(mismatch["current_layout_count"]),
+                "mismatched_sample_count": str(mismatch["mismatched_sample_count"]),
+                "mismatched_layout_count": str(mismatch["mismatched_layout_count"]),
                 "current_layout_hash": mismatch["current_layout_hash"][:8],
                 "dominant_layout_hash": mismatch["dominant_layout_hash"][:8],
                 "dominant_layout_count": str(mismatch["dominant_layout_count"]),

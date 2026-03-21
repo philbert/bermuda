@@ -360,11 +360,14 @@ class BermudaCalibrationManager:
     ) -> list[str]:
         """Return human-readable anchor deltas for one saved layout."""
         changed_anchors: dict[str, float] = {}
+        missing_anchors: set[str] = set()
 
         for sample in layout_samples:
             for scanner_address, anchor in (sample.get("anchors") or {}).items():
+                label = str(anchor.get("scanner_name") or scanner_address)
                 resolved = current_anchor_index.get(mac_norm(str(scanner_address)))
                 if resolved is None:
+                    missing_anchors.add(label)
                     continue
 
                 current_anchor, current_name = resolved
@@ -378,7 +381,15 @@ class BermudaCalibrationManager:
                 label = str(anchor.get("scanner_name") or current_name or scanner_address)
                 changed_anchors[label] = max(changed_anchors.get(label, 0.0), delta_m)
 
-        return [f"- {label}: moved {delta_m:.2f} m" for label, delta_m in sorted(changed_anchors.items())]
+        changed_lines = [
+            f"- {label}: moved {delta_m:.2f} m"
+            for label, delta_m in sorted(changed_anchors.items())
+        ]
+        missing_lines = [
+            f"- {label}: no longer present in current anchor set"
+            for label in sorted(missing_anchors)
+        ]
+        return [*changed_lines, *missing_lines]
 
     def get_layout_mismatch_summary(self) -> dict[str, Any] | None:
         """Describe a sample/layout mismatch that requires user confirmation."""
@@ -394,11 +405,19 @@ class BermudaCalibrationManager:
         if current_layout_hash in self.acknowledged_layout_hashes:
             return None
 
-        if any(self._sample_matches_current_geometry(sample, current_anchor_index) for sample in samples):
+        matched_samples = [
+            sample for sample in samples
+            if self._sample_matches_current_geometry(sample, current_anchor_index)
+        ]
+        mismatched_samples = [
+            sample for sample in samples
+            if not self._sample_matches_current_geometry(sample, current_anchor_index)
+        ]
+        if not mismatched_samples:
             return None
 
         by_layout: dict[str, list[dict[str, Any]]] = {}
-        for sample in samples:
+        for sample in mismatched_samples:
             layout_hash = str(sample.get("anchor_layout_hash") or "unknown")
             by_layout.setdefault(layout_hash, []).append(sample)
 
@@ -409,10 +428,16 @@ class BermudaCalibrationManager:
         ):
             changed_anchor_lines = self._layout_changed_anchor_lines(layout_samples, current_anchor_index)
             if not changed_anchor_lines:
-                continue
+                changed_anchor_lines = [
+                    "- Some saved sample anchors no longer resolve cleanly against the current anchor set"
+                ]
 
             return {
-                "sample_count": len(layout_samples),
+                "sample_count": len(mismatched_samples),
+                "total_sample_count": len(samples),
+                "current_layout_count": len(matched_samples),
+                "mismatched_sample_count": len(mismatched_samples),
+                "mismatched_layout_count": len(by_layout),
                 "current_layout_hash": current_layout_hash,
                 "dominant_layout_hash": dominant_layout_hash,
                 "dominant_layout_count": len(layout_samples),
