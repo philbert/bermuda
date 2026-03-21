@@ -2889,7 +2889,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             state["current_layout_has_ranging_model"],
             mismatch["changed_anchor_lines"],
         )
-        ir.async_delete_issue(self.hass, DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
         ir.async_create_issue(
             self.hass,
             DOMAIN,
@@ -2951,7 +2950,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         """Raise/clear repair when trilat is enabled but no anchors are configured."""
         if self._trilat_scanners_without_anchors != scannerlist:
             self._trilat_scanners_without_anchors = scannerlist
-            ir.async_delete_issue(self.hass, DOMAIN, REPAIR_TRILAT_WITHOUT_ANCHORS)
             if self._trilat_scanners_without_anchors and len(self._trilat_scanners_without_anchors) != 0:
                 ir.async_create_issue(
                     self.hass,
@@ -2964,6 +2962,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     severity=ir.IssueSeverity.WARNING,
                     is_fixable=False,
                 )
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, REPAIR_TRILAT_WITHOUT_ANCHORS)
 
     def _refresh_trilateration(self) -> None:
         """Refresh trilateration diagnostics for all tracked devices."""
@@ -4446,10 +4446,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         if self._scanners_without_areas != scannerlist:
             self._scanners_without_areas = scannerlist
-            # Clear any existing repair, because it's either resolved now (empty list) or we need to re-issue
-            # the repair in order to update the scanner list (re-calling doesn't update it).
-            ir.async_delete_issue(self.hass, DOMAIN, REPAIR_SCANNER_WITHOUT_AREA)
-
             if self._scanners_without_areas and len(self._scanners_without_areas) != 0:
                 ir.async_create_issue(
                     self.hass,
@@ -4462,6 +4458,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     severity=ir.IssueSeverity.ERROR,
                     is_fixable=False,
                 )
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, REPAIR_SCANNER_WITHOUT_AREA)
 
     # *** Not required now that we don't reload for scanners.
     # @callback

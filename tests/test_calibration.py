@@ -1035,6 +1035,62 @@ async def test_calibration_layout_mismatch_raises_repair_for_mixed_current_and_s
     }
 
 
+async def test_calibration_layout_mismatch_updates_issue_without_recreating(
+    hass: HomeAssistant, setup_bermuda_entry
+):
+    """Updating mismatch details should replace the issue in place without deleting it first."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+    coordinator._cancel_calibration_layout_mismatch_grace()
+    coordinator._calibration_layout_mismatch_grace_active = False
+    coordinator._calibration_layout_mismatch_grace_deadline = None
+
+    scanner = BermudaDevice("aa:bb:cc:dd:10:4b", coordinator)
+    scanner.name = "Garage Proxy"
+    scanner.anchor_x_m = 8.5
+    scanner.anchor_y_m = 2.0
+    scanner.anchor_z_m = 1.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_layout_issue_update",
+            "created_at": "2026-03-06T12:00:00+00:00",
+            "device_id": "device_one",
+            "device_name": "Device One",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "garage",
+            "room_name": "Garage",
+            "position": {"x_m": 1.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": "old_layout_hash",
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 8.0, "y_m": 2.0, "z_m": 1.0},
+                    "rssi_median": -70.0,
+                }
+            },
+            "quality": {"status": "accepted", "eligible_anchor_count": 1, "reason": None},
+        }
+    )
+
+    await coordinator.async_handle_calibration_samples_changed()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is not None
+    assert issue.translation_placeholders["changed_anchor_lines"] == "- Garage Proxy: moved 0.50 m"
+
+    with patch("custom_components.ble_trilateration.coordinator.ir.async_delete_issue") as delete_issue:
+        scanner.anchor_y_m = 3.0
+        await coordinator.async_handle_anchor_geometry_changed(reason="test_update")
+
+    delete_issue.assert_not_called()
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, REPAIR_CALIBRATION_LAYOUT_MISMATCH)
+    assert issue is not None
+    assert issue.translation_placeholders["changed_anchor_lines"] == "- Garage Proxy: moved 1.12 m"
+
+
 async def test_calibration_layout_mismatch_not_raised_without_current_anchor_geometry(
     hass: HomeAssistant, setup_bermuda_entry
 ):
