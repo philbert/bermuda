@@ -11,6 +11,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.ble_trilateration.bermuda_device import BermudaDevice
 from custom_components.ble_trilateration.config_flow import BermudaOptionsFlowHandler
 from custom_components.ble_trilateration.const import (
     DOMAIN,
@@ -249,6 +250,81 @@ async def test_calibration_samples_summary_shows_quality_and_delete_labels_are_h
     ]
 
 
+async def test_calibration_samples_summary_shows_stale_layout_status(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+):
+    """Calibration sample summary should flag stale samples in the config flow."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    scanner = BermudaDevice("aa:bb:cc:dd:10:61", coordinator)
+    scanner.name = "Kitchen Proxy"
+    scanner.anchor_x_m = 2.0
+    scanner.anchor_y_m = 3.0
+    scanner.anchor_z_m = 1.0
+    coordinator.devices[scanner.address] = scanner
+    coordinator._scanner_list.add(scanner.address)
+
+    current_layout_hash = coordinator.calibration.current_anchor_layout_hash
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_current_layout",
+            "created_at": "2026-03-12T10:44:40+01:00",
+            "device_id": "device_one",
+            "device_name": "Phil's iPhone",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "kitchen",
+            "room_name": "Kitchen",
+            "position": {"x_m": 1.0, "y_m": 2.0, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": current_layout_hash,
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 2.0, "y_m": 3.0, "z_m": 1.0},
+                    "rssi_median": -70.0,
+                }
+            },
+            "quality": {"status": "accepted", "level": "high", "eligible_anchor_count": 3, "reason": None},
+        }
+    )
+    await coordinator.calibration_store.async_add_sample(
+        {
+            "id": "sample_stale_layout",
+            "created_at": "2026-03-12T10:46:40+01:00",
+            "device_id": "device_one",
+            "device_name": "Phil's iPhone",
+            "device_address": "aa:bb:cc:dd:ee:01",
+            "room_area_id": "kitchen",
+            "room_name": "Kitchen",
+            "position": {"x_m": 1.5, "y_m": 2.5, "z_m": 1.0},
+            "sample_radius_m": 1.0,
+            "anchor_layout_hash": "old_layout_hash",
+            "anchors": {
+                scanner.address: {
+                    "scanner_name": scanner.name,
+                    "anchor_position": {"x_m": 1.5, "y_m": 2.5, "z_m": 1.0},
+                    "rssi_median": -71.0,
+                }
+            },
+            "quality": {"status": "accepted", "level": "medium", "eligible_anchor_count": 3, "reason": None},
+        }
+    )
+
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "calibration_samples"}
+    )
+
+    assert result["type"] == FlowResultType.MENU
+    assert result["step_id"] == "calibration_samples"
+    summary = result["description_placeholders"]["summary"]
+    assert 'mdi:skull-crossbones' in summary
+    assert "`1` stale sample(s) do not match the current anchor geometry." in summary
+    assert "Stale anchor layouts detected: `1`" in summary
+    assert "Dominant stale layout hash: `old_layo`" in summary
+    assert "- Kitchen Proxy: moved 0.71 m" in summary
+
+
 async def test_transition_samples_options_flow_summary_and_delete_one(
     hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
 ):
@@ -327,3 +403,48 @@ async def test_transition_samples_options_flow_summary_and_delete_one(
     assert "Deleted transition sample." in result["description_placeholders"]["summary"]
     remaining_ids = [sample["id"] for sample in coordinator.calibration.transition_samples()]
     assert remaining_ids == ["transition_sample_living"]
+
+
+async def test_transition_samples_summary_shows_stale_layout_status(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+):
+    """Transition sample summary should flag older layout hashes in the config flow."""
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    await coordinator.calibration_store.async_replace_transition_samples(
+        [
+            {
+                "id": "transition_sample_current",
+                "created_at": "2026-03-12T10:44:40+01:00",
+                "updated_at": "2026-03-12T10:46:05+01:00",
+                "room_area_id": "entrance",
+                "room_name": "Entrance",
+                "transition_name": "front_door",
+                "position": {"x_m": 1.2, "y_m": 1.5, "z_m": 3.7},
+                "transition_floor_ids": ["street_level"],
+                "anchor_layout_hash": coordinator.calibration.current_anchor_layout_hash,
+            },
+            {
+                "id": "transition_sample_stale",
+                "created_at": "2026-03-12T10:44:50+01:00",
+                "updated_at": "2026-03-12T10:45:00+01:00",
+                "room_area_id": "living_room",
+                "room_name": "Living Room",
+                "transition_name": "stairs",
+                "position": {"x_m": 4.2, "y_m": 2.5, "z_m": 3.7},
+                "transition_floor_ids": ["basement", "top_floor"],
+                "anchor_layout_hash": "old_layout_hash",
+            },
+        ]
+    )
+
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "transition_samples"}
+    )
+
+    assert result["type"] == FlowResultType.MENU
+    assert result["step_id"] == "transition_samples"
+    summary = result["description_placeholders"]["summary"]
+    assert 'mdi:skull-crossbones' in summary
+    assert "`1` transition sample(s) use an older anchor layout hash." in summary

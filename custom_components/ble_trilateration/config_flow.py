@@ -582,11 +582,32 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     def _format_calibration_summary(self, summary: dict, include_recent: bool = False) -> str:
         """Build markdown summary for calibration samples."""
+        total_sample_count = int(summary["sample_count"] or 0)
+        current_layout_count = int(summary["current_layout_count"] or 0)
+        stale_sample_count = max(0, total_sample_count - current_layout_count)
+        mismatch = self.coordinator.calibration.get_layout_mismatch_summary() if stale_sample_count > 0 else None
         lines = [
             f"Total samples: `{summary['sample_count']}`",
             f"Current anchor layout hash: `{summary['current_layout_hash'][:8]}`",
             f"Samples for current anchor layout: `{summary['current_layout_count']}`",
         ]
+        if total_sample_count > 0:
+            if stale_sample_count > 0:
+                lines.append(
+                    'Layout status: <ha-icon icon="mdi:skull-crossbones"></ha-icon> '
+                    f"`{stale_sample_count}` stale sample(s) do not match the current anchor geometry."
+                )
+                if mismatch is not None:
+                    lines.append(f"Stale anchor layouts detected: `{mismatch['mismatched_layout_count']}`")
+                    lines.append(f"Dominant stale layout hash: `{mismatch['dominant_layout_hash'][:8]}`")
+                    lines.append("")
+                    lines.append("Anchor differences detected:")
+                    lines.extend(mismatch["changed_anchor_lines"].splitlines())
+            else:
+                lines.append(
+                    'Layout status: <ha-icon icon="mdi:check-circle-outline"></ha-icon> '
+                    "All saved samples match the current anchor geometry."
+                )
         if summary["sample_count"] > summary["warn_threshold"]:
             lines.append(
                 f"Warning: sample count exceeds the soft warning threshold of `{summary['warn_threshold']}`."
@@ -617,11 +638,25 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     def _format_transition_summary(self, summary: dict, include_recent: bool = False) -> str:
         """Build markdown summary for transition samples."""
+        total_sample_count = int(summary["transition_sample_count"] or 0)
+        current_layout_count = int(summary["current_layout_count"] or 0)
+        stale_sample_count = max(0, total_sample_count - current_layout_count)
         lines = [
             f"Total transition samples: `{summary['transition_sample_count']}`",
             f"Current anchor layout hash: `{summary['current_layout_hash'][:8]}`",
             f"Transition samples for current anchor layout: `{summary['current_layout_count']}`",
         ]
+        if total_sample_count > 0:
+            if stale_sample_count > 0:
+                lines.append(
+                    'Layout status: <ha-icon icon="mdi:skull-crossbones"></ha-icon> '
+                    f"`{stale_sample_count}` transition sample(s) use an older anchor layout hash."
+                )
+            else:
+                lines.append(
+                    'Layout status: <ha-icon icon="mdi:check-circle-outline"></ha-icon> '
+                    "All transition samples match the current anchor layout hash."
+                )
         if summary["by_room"]:
             lines.append("")
             lines.append("By room:")
