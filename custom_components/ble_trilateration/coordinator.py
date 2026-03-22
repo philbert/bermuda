@@ -1625,6 +1625,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             or device.trilat_x_m is None
             or device.trilat_y_m is None
         ):
+            stable_area_id = self._stable_area_id(device)
             state.room_challenger_id = None
             state.room_challenger_since = 0.0
             device.diag_area_switch = "Hybrid room classification: trilat_unavailable"
@@ -1634,10 +1635,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 floor_name=device.trilat_floor_name,
                 force_unknown=True,
             )
-            _log_target_room_diag(stable_area_id=self._stable_area_id(device), candidate_area_id=None)
+            self._log_room_decision_event(
+                device,
+                state,
+                event="trilat_unavailable",
+                stable_area_id=stable_area_id,
+                challenger_area_id=None,
+                candidate_area_id=None,
+                resolved_area_id=None,
+                hold_reason=None,
+            )
+            _log_target_room_diag(stable_area_id=stable_area_id, candidate_area_id=None)
             return
 
         if not self.room_classifier.has_trained_rooms(layout_hash, device.trilat_floor_id):
+            stable_area_id = self._stable_area_id(device)
             state.room_challenger_id = None
             state.room_challenger_since = 0.0
             device.diag_area_switch = "Hybrid room classification: no_trained_rooms"
@@ -1647,7 +1659,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 floor_name=device.trilat_floor_name,
                 force_unknown=True,
             )
-            _log_target_room_diag(stable_area_id=self._stable_area_id(device), candidate_area_id=None)
+            self._log_room_decision_event(
+                device,
+                state,
+                event="no_trained_rooms",
+                stable_area_id=stable_area_id,
+                challenger_area_id=None,
+                candidate_area_id=None,
+                resolved_area_id=None,
+                hold_reason=None,
+            )
+            _log_target_room_diag(stable_area_id=stable_area_id, candidate_area_id=None)
             return
 
         live_rssi_by_scanner: dict[str, float] = {}
@@ -1715,6 +1737,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         floor_id=device.trilat_floor_id,
                         floor_name=device.trilat_floor_name,
                     )
+                    self._log_room_decision_event(
+                        device,
+                        state,
+                        event="challenger_blocked",
+                        stable_area_id=stable_area_id,
+                        challenger_area_id=classification.area_id,
+                        candidate_area_id=classification.area_id,
+                        resolved_area_id=stable_area_id,
+                        hold_reason=guardrail_reason,
+                        classification=classification,
+                        geometry_quality_01=geometry_quality_01,
+                    )
                     _log_target_room_diag(
                         stable_area_id=stable_area_id,
                         candidate_area_id=classification.area_id,
@@ -1751,6 +1785,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         floor_id=device.trilat_floor_id,
                         floor_name=device.trilat_floor_name,
                     )
+                    self._log_room_decision_event(
+                        device,
+                        state,
+                        event="challenger_blocked",
+                        stable_area_id=stable_area_id,
+                        challenger_area_id=classification.area_id,
+                        candidate_area_id=classification.area_id,
+                        resolved_area_id=stable_area_id,
+                        hold_reason=f"min_sample_margin({sample_margin:.2f})",
+                        classification=classification,
+                        geometry_quality_01=geometry_quality_01,
+                    )
                     _log_target_room_diag(
                         stable_area_id=stable_area_id,
                         candidate_area_id=classification.area_id,
@@ -1765,6 +1811,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         floor_id=device.trilat_floor_id,
                         floor_name=device.trilat_floor_name,
                     )
+                    self._log_room_decision_event(
+                        device,
+                        state,
+                        event="challenger_started",
+                        stable_area_id=stable_area_id,
+                        challenger_area_id=classification.area_id,
+                        candidate_area_id=classification.area_id,
+                        resolved_area_id=stable_area_id,
+                        hold_reason=f"room_switch_dwell({required_dwell:.1f}s)",
+                        classification=classification,
+                        geometry_quality_01=geometry_quality_01,
+                    )
                     _log_target_room_diag(
                         stable_area_id=stable_area_id,
                         candidate_area_id=classification.area_id,
@@ -1777,6 +1835,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                         floor_id=device.trilat_floor_id,
                         floor_name=device.trilat_floor_name,
                     )
+                    self._log_room_decision_event(
+                        device,
+                        state,
+                        event="challenger_waiting",
+                        stable_area_id=stable_area_id,
+                        challenger_area_id=classification.area_id,
+                        candidate_area_id=classification.area_id,
+                        resolved_area_id=stable_area_id,
+                        hold_reason=f"room_switch_dwell({required_dwell:.1f}s)",
+                        classification=classification,
+                        geometry_quality_01=geometry_quality_01,
+                    )
                     _log_target_room_diag(
                         stable_area_id=stable_area_id,
                         candidate_area_id=classification.area_id,
@@ -1788,6 +1858,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 classification.area_id,
                 floor_id=device.trilat_floor_id,
                 floor_name=device.trilat_floor_name,
+            )
+            self._log_room_decision_event(
+                device,
+                state,
+                event="switch_applied",
+                stable_area_id=stable_area_id,
+                challenger_area_id=classification.area_id if stable_area_id != classification.area_id else None,
+                candidate_area_id=classification.area_id,
+                resolved_area_id=classification.area_id,
+                hold_reason=None,
+                classification=classification,
+                geometry_quality_01=geometry_quality_01,
             )
             _log_target_room_diag(
                 stable_area_id=stable_area_id,
@@ -1804,6 +1886,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 floor_id=device.trilat_floor_id,
                 floor_name=device.trilat_floor_name,
             )
+            self._log_room_decision_event(
+                device,
+                state,
+                event="weak_evidence_hold",
+                stable_area_id=stable_area_id,
+                challenger_area_id=classification.best_area_id,
+                candidate_area_id=classification.best_area_id,
+                resolved_area_id=stable_area_id,
+                hold_reason="weak_evidence",
+                classification=classification,
+                geometry_quality_01=geometry_quality_01,
+            )
             _log_target_room_diag(stable_area_id=stable_area_id, candidate_area_id=classification.best_area_id)
             return
 
@@ -1814,6 +1908,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             floor_id=device.trilat_floor_id,
             floor_name=device.trilat_floor_name,
             force_unknown=True,
+        )
+        self._log_room_decision_event(
+            device,
+            state,
+            event="resolved_unknown",
+            stable_area_id=stable_area_id,
+            challenger_area_id=classification.best_area_id,
+            candidate_area_id=classification.best_area_id,
+            resolved_area_id=None,
+            hold_reason=None,
+            classification=classification,
+            geometry_quality_01=geometry_quality_01,
         )
         _log_target_room_diag(stable_area_id=stable_area_id, candidate_area_id=classification.best_area_id)
 
@@ -1959,6 +2065,129 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             for area_id, score, coverage, sample_count in rankings[:3]
         )
 
+    def _room_log_area_label(self, area_id: str | None) -> str:
+        """Return a compact room label for room-decision logs."""
+        if area_id is None:
+            return "none"
+        area_name = self.resolve_area_name(area_id)
+        if area_name and area_name != area_id:
+            return f"{area_name}[{area_id}]"
+        return area_id
+
+    @staticmethod
+    def _room_decision_log_signature(
+        *,
+        event: str,
+        stable_area_id: str | None,
+        challenger_area_id: str | None,
+        candidate_area_id: str | None,
+        resolved_area_id: str | None,
+        hold_reason: str | None,
+        classification_reason: str | None,
+        fingerprint_best_area_id: str | None,
+    ) -> str:
+        """Return a structural signature for sparse room-decision logs."""
+        return "|".join(
+            (
+                event,
+                stable_area_id or "none",
+                challenger_area_id or "none",
+                candidate_area_id or "none",
+                resolved_area_id or "none",
+                hold_reason or "none",
+                classification_reason or "none",
+                fingerprint_best_area_id or "none",
+            )
+        )
+
+    def _room_decision_should_warn(
+        self,
+        *,
+        event: str,
+        hold_reason: str | None,
+        classification,
+        resolved_area_id: str | None,
+        geometry_quality_01: float,
+    ) -> bool:
+        """Return True when a room decision is anomalous enough for warning-level logs."""
+        if event == "weak_evidence_hold":
+            return True
+        if event == "challenger_blocked" and hold_reason in {"weak_geometry_guardrail", "weak_fp_coverage"}:
+            return True
+        if event != "switch_applied" or classification is None:
+            return False
+        fingerprint_best_area_id = getattr(classification, "fingerprint_best_area_id", None)
+        if geometry_quality_01 < self._ROOM_SWITCH_GEOMETRY_QUALITY_MIN:
+            return True
+        if getattr(classification, "fingerprint_coverage", 0.0) < self._ROOM_SWITCH_FP_COVERAGE_FLOOR:
+            return True
+        if getattr(classification, "fingerprint_confidence", 0.0) < self._ROOM_SWITCH_FP_CONFIDENCE_DECISIVE:
+            return True
+        return fingerprint_best_area_id is not None and fingerprint_best_area_id != resolved_area_id
+
+    def _log_room_decision_event(
+        self,
+        device: BermudaDevice,
+        state: "BermudaDataUpdateCoordinator.TrilatDecisionState",
+        *,
+        event: str,
+        stable_area_id: str | None,
+        challenger_area_id: str | None,
+        candidate_area_id: str | None,
+        resolved_area_id: str | None,
+        hold_reason: str | None,
+        classification=None,
+        geometry_quality_01: float = 0.0,
+    ) -> None:
+        """Emit one sparse log line when the room decision state changes materially."""
+        signature = self._room_decision_log_signature(
+            event=event,
+            stable_area_id=stable_area_id,
+            challenger_area_id=challenger_area_id,
+            candidate_area_id=candidate_area_id,
+            resolved_area_id=resolved_area_id,
+            hold_reason=hold_reason,
+            classification_reason=getattr(classification, "reason", None),
+            fingerprint_best_area_id=getattr(classification, "fingerprint_best_area_id", None),
+        )
+        if state.last_room_decision_log_signature == signature:
+            return
+        state.last_room_decision_log_signature = signature
+
+        x_m = "none" if device.trilat_x_m is None else f"{float(device.trilat_x_m):.2f}"
+        y_m = "none" if device.trilat_y_m is None else f"{float(device.trilat_y_m):.2f}"
+        z_m = "none" if device.trilat_z_m is None else f"{float(device.trilat_z_m):.2f}"
+        residual_m = "none" if device.trilat_residual_m is None else f"{float(device.trilat_residual_m):.2f}"
+        line = (
+            "Room decision: device=%s floor=%s event=%s stable=%s challenger=%s "
+            "candidate=%s resolved=%s hold=%s pos=(%s,%s,%s) anchors=%s residual=%s %s"
+        )
+        args = (
+            device.name,
+            device.trilat_floor_name or device.trilat_floor_id or "unknown",
+            event,
+            self._room_log_area_label(stable_area_id),
+            self._room_log_area_label(challenger_area_id),
+            self._room_log_area_label(candidate_area_id),
+            self._room_log_area_label(resolved_area_id),
+            hold_reason or "none",
+            x_m,
+            y_m,
+            z_m,
+            device.trilat_anchor_count,
+            residual_m,
+            device.diag_area_switch or "room_classification_unavailable",
+        )
+        _LOGGER.debug(line, *args)
+        if self._room_decision_should_warn(
+            event=event,
+            hold_reason=hold_reason,
+            classification=classification,
+            resolved_area_id=resolved_area_id,
+            geometry_quality_01=geometry_quality_01,
+        ):
+            _LOGGER_SPAM_LESS.warning(f"room_decision:{device.address}", line, *args)
+
     def _room_switch_min_sample_margin(self, sample_count: int) -> float:
         """Return extra blended-score margin for sparse challenger rooms."""
         if sample_count == 1:
@@ -2086,6 +2315,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         last_fingerprint_veto_at: float = 0.0
         bootstrap_applied: bool = False
         bootstrap_restored_at: float = 0.0
+        last_room_decision_log_signature: str | None = None
         bootstrap_hold_until: float = 0.0
 
     _TRILAT_MIN_ANCHORS: int = 3

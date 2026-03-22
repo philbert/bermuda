@@ -1388,6 +1388,57 @@ def test_area_switch_holds_when_geometry_is_weak_and_fingerprint_is_not_decisive
     assert "hold=weak_geometry_guardrail" in device.diag_area_switch
 
 
+def test_area_switch_logs_guardrail_hold_once_per_state():
+    """Repeated weak-geometry guardrail holds should emit a single warning per structural state."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-guard-log")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.trilat_geometry_quality = 2.0
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.52,
+            second_score=0.46,
+            topk_used=2,
+            geometry_score=0.08,
+            fingerprint_score=0.55,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.55,
+            fingerprint_second_score=0.53,
+            fingerprint_confidence=0.02,
+            fingerprint_coverage=0.80,
+            sample_count=3,
+        ),
+        room_reference_point=lambda *_args, **_kwargs: (0.0, 0.0, 0.0),
+    )
+
+    with (
+        patch("custom_components.ble_trilateration.coordinator._LOGGER_SPAM_LESS.warning") as log_warning,
+        patch("custom_components.ble_trilateration.coordinator.monotonic_time_coarse", return_value=100.0),
+    ):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+
+    assert log_warning.call_count == 1
+    args = log_warning.call_args.args
+    assert args[0] == "room_decision:dev-room-guard-log"
+    assert "Room decision:" in args[1]
+    assert args[4] == "challenger_blocked"
+    assert args[9] == "weak_geometry_guardrail"
+    assert "hold=weak_geometry_guardrail" in args[15]
+
+
 def test_area_switch_allows_decisive_fingerprint_challenger_when_geometry_is_weak():
     """Weak geometry should still allow a challenger to accumulate dwell when fingerprint is decisive."""
     coordinator = _make_coordinator()
@@ -1431,6 +1482,59 @@ def test_area_switch_allows_decisive_fingerprint_challenger_when_geometry_is_wea
     assert state.room_challenger_id == "living_room"
     assert "hold=weak_geometry_guardrail" not in device.diag_area_switch
     assert "hold=room_switch_dwell" in device.diag_area_switch
+
+
+def test_area_switch_logs_suspicious_low_geometry_switch_at_warning():
+    """A low-geometry switch that still gets accepted should leave a warning-level breadcrumb."""
+    coordinator = _make_coordinator()
+    device = _DummyDevice("dev-room-switch-log")
+    device.trilat_status = "ok"
+    device.trilat_x_m = 10.0
+    device.trilat_y_m = 2.0
+    device.trilat_z_m = 3.0
+    device.trilat_floor_id = "f1"
+    device.trilat_floor_name = "Floor f1"
+    device.trilat_geometry_quality = 2.0
+    device.area_id = "kitchen"
+    device.area_name = "kitchen"
+    device.area_last_seen_id = "kitchen"
+    coordinator.room_classifier = SimpleNamespace(
+        has_trained_rooms=lambda _layout_hash, _floor_id: True,
+        classify=lambda **_kwargs: RoomClassification(
+            area_id="living_room",
+            reason="ok",
+            best_area_id="living_room",
+            best_score=0.70,
+            second_score=0.10,
+            topk_used=2,
+            geometry_score=0.08,
+            fingerprint_score=0.72,
+            fingerprint_best_area_id="living_room",
+            fingerprint_best_score=0.72,
+            fingerprint_second_score=0.45,
+            fingerprint_confidence=0.27,
+            fingerprint_coverage=1.0,
+            sample_count=3,
+        ),
+    )
+
+    with (
+        patch("custom_components.ble_trilateration.coordinator._LOGGER_SPAM_LESS.warning") as log_warning,
+        patch("custom_components.ble_trilateration.coordinator.monotonic_time_coarse", side_effect=[100.0, 102.0]),
+    ):
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+        coordinator._refresh_area_from_trilat(device, "layout-a")
+
+    assert device.area_id == "living_room"
+    assert log_warning.call_count == 1
+    args = log_warning.call_args.args
+    assert args[0] == "room_decision:dev-room-switch-log"
+    assert "Room decision:" in args[1]
+    assert args[4] == "switch_applied"
+    assert args[8] == "living_room"
+    assert args[9] == "none"
+    assert "geom_q=0.20" in args[15]
+    assert "fp_best=living_room" in args[15]
 
 
 def test_area_switch_requires_extra_dwell_for_sparse_room_challenger():
